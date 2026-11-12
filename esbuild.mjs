@@ -18,6 +18,8 @@ const ctx = await esbuild.context({
   external: ['vscode'],
   format: 'cjs',
   platform: 'node',
+  // jsonc-parser 的 UMD 入口含无法静态打包的 require('./impl/format')，优先用 ESM 入口
+  mainFields: ['module', 'main'],
   target: 'node18',
   sourcemap: true,
   // 提取第三方许可注释到 dist/extension.js.LEGAL.txt（§3.1 License 合规）

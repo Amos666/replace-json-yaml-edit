@@ -134,7 +134,9 @@
     "watch": "node esbuild.mjs --watch",
     "compile": "tsc --noEmit",
     "test": "node --test test/**/*.test.ts",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "test:integration:build": "node test/integration/build.mjs",
+    "test:integration": "npm run test:integration:build && node test/integration/run.cjs"
   },
   "dependencies": {
     "jsonc-parser": "3.3.1",

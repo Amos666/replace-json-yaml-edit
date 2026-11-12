@@ -160,3 +160,12 @@
 - **G1 扫描取消已闭环**：`src/shared/protocol.ts` 的 `WebviewToHost` 新增 `{ type:'cancelScan' }`；`panel.js` 的取消按钮在 `S.phase === 'scanning'` 时启用、其余态保持可访问禁用态与 tooltip；`controller.ts` 新增 `case 'cancelScan'`，调用 `cancelScan()`（generation + CancellationTokenSource）后回 `state(phase:'input', '扫描已取消')`，避免 UI 卡在扫描中。改动后 `compile` / `node --check` / 54 例单测 / `build` / `package` 全绿。
 - 第四节中依赖真实 VS Code 宿主的 `[~]` / `[ ]` 项仍**未执行**：本仓库当前环境未安装 VS Code GUI，未做四主题目视走查，也未跑端到端冒烟（扫描 → 预览 → 应用 → Ctrl+Z）。如实保留原标注，不虚报完成。
 - G2–G12 仍为「建议但未实施」，属 P1 增强或非阻塞协议扩展，未在本次集成中改动。
+
+
+---
+
+## 七、集成补记二（真实 VS Code 集成测试）
+
+- §10.5 集成测试已在真实 VS Code 1.146.0（Linux headless，`xvfb-run -a`）跑通 **4/4**，代码见 `test/integration/`。第四节第 8 项的「现有测试全部通过 + 一次 Ctrl+Z 全量还原」已由自动化覆盖；但「Webview 内扫描 → 预览」交互仍需人工冒烟，故该项**仍不标 `[x]`**，不虚报完成。
+- 第四节 #1 / #4 / #5 / #6 仍未执行（四主题目视、键盘焦点环可见性、对比度与 300px、四态目视）。本机具备 `Xvfb` + `x11vnc`，后续可做截图核验，但不等同于人眼目视走查。
+- 集成过程中发现并修复了 `dist/extension.js` 的 `jsonc-parser` UMD 打包 bug（否则插件在真实 VS Code 中加载即失败）。这是单元测试无法暴露、只有真实宿主才能发现的问题。

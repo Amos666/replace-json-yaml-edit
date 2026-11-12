@@ -23,6 +23,11 @@
 - 零额外安装：`jsonc-parser` / `yaml` 打包进 `.vsix`；sed 为进程内 JS `RegExp`；无外部 CLI、无运行时网络请求。
 - MIT；第三方声明见 `THIRD-PARTY-NOTICES.md`（含 CC BY 4.0 Codicon 许可全文）。
 
+### 集成测试与打包修复
+- `test/integration/`：`@vscode/test-electron` + `xvfb-run -a` 在真实 VS Code 1.146.0 跑通 **4/4**（扩展激活与 7 命令、Webview 资源随包分发、多文件 `git diff` 仅目标行、一次 Ctrl+Z 全量逐字节还原、混合会话 fileScope 挑选）。
+- 修复打包 bug：esbuild 默认选 `jsonc-parser` 的 UMD 入口，产物残留 `require('./impl/format')`，会导致插件在真实 VS Code 加载失败；两个构建脚本改为 `mainFields: ['module','main']` 优先 ESM 入口。
+
 ### 未执行 / 待补
-- 未在真实 VS Code 四主题下目视走查，也未跑 `@vscode/test-electron` 端到端冒烟（扫描 → 预览 → 应用 → Ctrl+Z）；`UI-DELIVERY.md` 第四节如实标注。
+- 四主题目视走查、键盘焦点环、300px 窄宽度、Webview 内「扫描 → 预览」交互冒烟（自动化只覆盖 应用 → 撤销）；`UI-DELIVERY.md` 第四节如实标注。
+- §3.3 干净 Windows（无 Node/Git）+ Remote-SSH 复跑：需目标环境。
 - P1 增强：>500 节点虚拟滚动、路径补全、旧值分布 / 命中样本专用协议字段、完整游标 → 嵌套 JSONPath 推导。

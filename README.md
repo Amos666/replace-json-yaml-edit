@@ -5,7 +5,8 @@
 安装插件即可使用全部功能，**不需要**在机器上额外安装 Node.js、npm、jq、yq、sed、Git Bash、Python 或任何外部命令行工具。JSON/JSONC 由 `jsonc-parser`、YAML 由 `yaml` 在插件内解析，sed 风格替换由进程内 JS 正则执行；所有依赖随 `.vsix` 一起分发。
 
 > 当前版本 0.1.0：P0 功能已完整实现（双引擎、三层文件过滤、批量选择与逐个审阅、diff 预览、一次撤销）。
-> 未在真实 VS Code 四主题下做目视走查，也未跑端到端冒烟（扫描 → 预览 → 应用 → Ctrl+Z）；如实记录见 `UI-DELIVERY.md` 第四节。
+> `npm run test:integration` 在真实 VS Code（Linux headless / xvfb-run）跑通 **4/4**：扩展激活、Webview 资源随包分发、多文件 `git diff` 仅目标行、一次 Ctrl+Z 全量逐字节还原。
+> 仍需人工：四主题目视走查、键盘焦点环、300px 窄宽度、Webview 内「扫描 → 预览」交互冒烟；如实记录见 `UI-DELIVERY.md`。
 
 ## 它能做什么
 
@@ -37,6 +38,7 @@ npm run compile   # TypeScript 严格类型检查
 npm test          # core/ 单元测试（54 例）
 npm run build     # esbuild 打包 + 复制 Webview 资源到 dist/ui/
 npm run package   # 产出 .vsix
+npm run test:integration   # xvfb-run 启动真实 VS Code 跑集成测试（Linux 自动 headless）
 ```
 
 在 VS Code 中按 F5 启动 Extension Development Host。设计规格见 `structured-batch-edit-spec.md`，UI 交付物见 `UI-DELIVERY.md`。
@@ -46,7 +48,7 @@ npm run package   # 产出 .vsix
 - 把 `package.json` 的 `publisher` 改成自己的 Marketplace publisher ID；**仅上传 GitHub 不需要改**。
 - `repository` 已指向 `https://github.com/Amos666/replace-json-yaml-edit.git`。
 - `npm run package` 产出 `.vsix`；esbuild 以 `--legal-comments=linked` 提取第三方许可注释，`THIRD-PARTY-NOTICES.md` 随包分发。
-- 在真实 VS Code 中按 §10.6 清单走查 Light / Dark / High Contrast / High Contrast Light 四主题，并补跑端到端冒烟（扫描 → 预览 → 应用 → Ctrl+Z 全量还原）。
+- 在真实 VS Code 中按 §10.6 清单走查 Light / Dark / High Contrast / High Contrast Light 四主题，并手动走一遍 Webview 的「扫描 → 预览 → 应用 → Ctrl+Z」交互（自动化集成测试已覆盖 应用 → 撤销 部分）。
 
 ## 许可
 
