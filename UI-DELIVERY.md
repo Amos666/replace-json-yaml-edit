@@ -169,3 +169,16 @@
 - §10.5 集成测试已在真实 VS Code 1.146.0（Linux headless，`xvfb-run -a`）跑通 **4/4**，代码见 `test/integration/`。第四节第 8 项的「现有测试全部通过 + 一次 Ctrl+Z 全量还原」已由自动化覆盖；但「Webview 内扫描 → 预览」交互仍需人工冒烟，故该项**仍不标 `[x]`**，不虚报完成。
 - 第四节 #1 / #4 / #5 / #6 仍未执行（四主题目视、键盘焦点环可见性、对比度与 300px、四态目视）。本机具备 `Xvfb` + `x11vnc`，后续可做截图核验，但不等同于人眼目视走查。
 - 集成过程中发现并修复了 `dist/extension.js` 的 `jsonc-parser` UMD 打包 bug（否则插件在真实 VS Code 中加载即失败）。这是单元测试无法暴露、只有真实宿主才能发现的问题。
+
+
+---
+
+## 八、截图核验（真实 VS Code 四主题，证据见 docs/screenshots/）
+
+- 工具链：`Xvfb :99` → `x11vnc :5950` → VNC 客户端截屏/发键；扩展经 `@vscode/test-electron` 的 `runTests` 通道加载（实测 GUI 直启传 `--extensionDevelopmentPath` 不会被扫描加载，不可靠）；主题切换用 `workspace.getConfiguration().update('workbench.colorTheme', …, Global)` 纯 API 完成，配合 state/ack 双向握手防丢帧。
+- 核验结果（`docs/screenshots/shot-*.png`，1280×900）：
+  - Dark Modern / Light Modern：面板背景与主题一致，无错色大块，文字可读；
+  - High Contrast / High Contrast Light：所有区块均有显式 1px 边框（§8.8）；
+  - 中文渲染正常无乱码；树勾选、`●2` 计数徽标、非候选灰显（app.yaml）与概览条/底栏计数均正确。
+- **发现并修复真实 UI bug**：确认弹窗 `.modal-backdrop` 的 `display:flex` 覆盖了 `hidden` 属性的 UA 样式，弹窗初始可见且 `hideConfirm()` 失效（关不掉）；补 `.modal-backdrop[hidden]{display:none}` 后复测通过。该问题靠静态检查与单元测试均无法发现。
+- **如实标注**：这是「截图核验」而非人眼目视走查；键盘焦点环目视、300px 窄宽度实测、四态全交互仍未覆盖。

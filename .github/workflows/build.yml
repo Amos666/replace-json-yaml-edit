@@ -1,0 +1,132 @@
+name: Build & Package
+
+on:
+  # 仅分支 push 触发：tag 由本工作流自动管理（每次提交刷新到当前 commit），
+  # 若同时监听 tag push 会重复构建甚至无限循环（工作流自身会 push tag）
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # tag 推送 + release 上传需要写权限
+
+jobs:
+  build:
+    name: Test & Package VSIX
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - name: Checkout (full history for tag ops)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # 读取 package.json 版本号，生成目标 tag（v<version>）
+      - name: Read version from package.json
+        id: ver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Detected version: ${VERSION}, target tag: ${TAG}"
+
+      # 每次提交都把 tag 刷新到当前 commit（git 失败时回退 REST API，仅需 contents:write）
+      - name: Delete remote tag if exists, then push tag
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          SHA="$(git rev-parse HEAD)"
+          REPO="${{ github.repository }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -d "${TAG}" 2>/dev/null || true
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "refs/tags/${TAG}$"; then
+            echo "Remote tag ${TAG} exists, deleting it first..."
+            if ! DELETE_OUT=$(git push origin ":refs/tags/${TAG}" 2>&1); then
+              echo "::error::git delete tag failed: ${DELETE_OUT//$'\n'/%0A}"
+              echo "Deleting tag via API instead..."
+              gh api -X DELETE "repos/${REPO}/git/refs/tags/${TAG}"
+            fi
+          fi
+          git tag -a "${TAG}" -m "Auto release ${TAG} @ ${SHA}"
+          if ! PUSH_OUT=$(git push origin "refs/tags/${TAG}" 2>&1); then
+            echo "::error::git push tag failed: ${PUSH_OUT//$'\n'/%0A}"
+            echo "Creating tag ref via API instead..."
+            gh api -X POST "repos/${REPO}/git/refs" \
+              -f ref="refs/tags/${TAG}" -f sha="${SHA}" > /dev/null
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile TypeScript
+        run: npm run compile
+
+      - name: Unit tests
+        run: npm test
+
+      # 真实 VS Code Extension Host 端到端（headless；下载 VS Code 约 390MB）
+      - name: Integration tests (xvfb-run)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a npm run test:integration
+
+      - name: Package VSIX
+        run: |
+          npx @vscode/vsce --version
+          npx @vscode/vsce package --no-dependencies -o replace-json-yaml-edit-${{ steps.ver.outputs.tag }}.vsix
+
+      - name: Verify VSIX contents
+        run: |
+          unzip -l replace-json-yaml-edit-*.vsix
+          echo "---"
+          unzip -l replace-json-yaml-edit-*.vsix | grep -E "dist/extension.js|dist/ui/codicon.ttf|THIRD-PARTY-NOTICES|licenses/" || true
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: replace-json-yaml-edit-vsix
+          path: replace-json-yaml-edit-*.vsix
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # PR 不发 Release；push 分支 / 手动触发都发布
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: replace-json-yaml-edit-vsix
+          path: ./assets
+
+      - name: List downloaded assets
+        run: ls -la ./assets
+
+      # tag_name 显式指定：tag 已在 build job 中创建/刷新到当前 commit
+      # 同名 Release 已存在时会更新描述，同名 asset 会被覆盖 → 每次提交刷新安装包
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          files: ./assets/*.vsix
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(needs.build.outputs.tag, '-') }}

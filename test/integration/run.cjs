@@ -46,6 +46,7 @@ async function main() {
   let exitCode = 0;
   try {
     exitCode = await runTests({
+      cachePath: path.join(ROOT, '.vscode-test'),
       extensionDevelopmentPath: ROOT,
       extensionTestsPath: suite,
       launchArgs: [ws, '--disable-gpu'],

@@ -672,6 +672,8 @@ input.filter-input { width: 100%; padding-left: 24px; }
   background: color-mix(in srgb, var(--c-bg) 55%, transparent);
   padding: var(--sp-4);
 }
+/* display:flex 会覆盖 hidden 属性的 UA 样式，弹窗默认可见且 hideConfirm() 失效，必须显式压回 */
+.modal-backdrop[hidden] { display: none; }
 .modal {
   width: min(460px, 100%); max-height: 80%; overflow: auto;
   border: 1px solid var(--c-wborder); border-radius: var(--radius);
