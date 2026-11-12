@@ -28,7 +28,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # node --test 直跑 .ts 依赖 Node 22.18+/24 的原生 type-stripping（Node 20 报 ERR_UNKNOWN_FILE_EXTENSION）
+          node-version: '24'
           cache: 'npm'
 
       # 读取 package.json 版本号，生成目标 tag（v<version>）
