@@ -41,7 +41,7 @@ npm test          # core/ 单元测试
 ## 发布前
 
 - 把 `package.json` 的 `publisher` 改成自己的 Marketplace publisher ID；**仅上传 GitHub 不需要改**。
-- 上传到 GitHub 后，把仓库 URL 填入 `package.json` 的 `repository` 字段（当前故意留空，打包用 `--allow-missing-repository` 放行）。
+- `repository` 已指向 `https://github.com/Amos666/replace-json-yaml-edit.git`。
 - `npm run package` 产出 `.vsix`；esbuild 以 `--legal-comments=linked` 提取第三方许可注释，`THIRD-PARTY-NOTICES.md` 随包分发。
 - 设计规格见仓库内 `structured-batch-edit-spec.md`。
 
