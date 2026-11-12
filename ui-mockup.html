@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StructEdit v1.2 — 界面高保真原型（四主题 · UI 铁律对齐版）</title>
+
+<!-- ============================================================
+     主样式：只用官方 --vscode-* 主题变量与 rgba()/color-mix() 叠加。
+     本区块零硬编码颜色（验收 grep 项）。
+     ============================================================ -->
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--vscode-editor-background);
+    color: var(--vscode-editor-foreground);
+    font-family: var(--vscode-font-family);
+    font-size: var(--vscode-font-size);
+    padding: 16px;
+  }
+  code, .mono { font-family: var(--vscode-editor-font-family); }
+  svg.ic { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.3;
+           stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  svg.ic.s12 { width: 12px; height: 12px; }
+
+  /* 滚动条走主题变量 */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+  ::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* 焦点可见（铁律：禁止裸 outline:none） */
+  :focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  .input:focus-visible { outline-offset: -1px; }
+
+  /* 过渡：120–200ms，仅颜色类属性；尊重 reduced-motion */
+  .btn, .chip, .op, .trow, .tree-row, .engine-tab, .input, .add-expr, .jump {
+    transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .btn, .chip, .op, .trow, .tree-row, .engine-tab, .input, .add-expr, .jump { transition-duration: 0ms; }
+    .sk { animation: none; }
+  }
+
+  /* ===== 面板骨架：圆角 4px、单层边框、无阴影、无渐变 ===== */
+  .panel { max-width: 1120px; margin: 0 auto; border: 1px solid var(--vscode-panel-border);
+           border-radius: 4px; background: var(--vscode-editor-background); overflow: hidden; }
+
+  /* Toolbar */
+  .toolbar { display: flex; align-items: center; gap: 10px; padding: 8px 16px; min-height: 36px;
+             background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  .toolbar h1 { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .toolbar h1 svg { color: var(--vscode-notificationsInfoIcon-foreground); }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .hint { color: var(--vscode-descriptionForeground); font-size: 11px; }
+
+  /* 概览条 */
+  .overview { display: flex; align-items: center; gap: 18px; padding: 6px 16px; min-height: 28px;
+              background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border);
+              font-size: 12px; color: var(--vscode-descriptionForeground); flex-wrap: wrap; }
+  .overview .stat { white-space: nowrap; }
+  .overview .stat b { color: var(--vscode-editor-foreground); font-size: 13px; margin-left: 3px; }
+  .overview .stat.warn b { color: var(--vscode-editorWarning-foreground); }
+  .overview .stat.err b { color: var(--vscode-errorForeground); }
+  .overview .scan { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .overview .bar { width: 90px; height: 2px; background: var(--vscode-input-background); overflow: hidden; }
+  .overview .bar i { display: block; height: 100%; width: 70%; background: var(--vscode-button-background); }
+
+  /* ===== 控件 ===== */
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+         background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
+         border: 1px solid var(--vscode-button-border); border-radius: 2px; font-size: 12px;
+         cursor: pointer; font-family: inherit; white-space: nowrap; }
+  .btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+  .btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+  .btn.primary:hover { background: var(--vscode-button-hoverBackground); }
+  .btn.mini { height: 20px; padding: 0 7px; font-size: 11px; }
+  .btn[disabled], .btn.primary[disabled] {
+    background: transparent; color: var(--vscode-disabledForeground);
+    border-color: var(--vscode-input-border); cursor: not-allowed; }
+
+  .input { background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+           border: 1px solid var(--vscode-input-border); border-radius: 2px; padding: 0 8px;
+           font-size: 12px; height: 24px; width: 100%; font-family: inherit; }
+  .input.mono { font-family: var(--vscode-editor-font-family); }
+  .input::placeholder { color: var(--vscode-input-placeholderForeground); }
+  .input.invalid { border-color: var(--vscode-inputValidation-errorBorder); }
+
+  /* 区块 */
+  section.card { padding: 12px 16px; border-bottom: 1px solid var(--vscode-panel-border); }
+  .card-title { display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 600;
+                letter-spacing: .5px; text-transform: uppercase; color: var(--vscode-descriptionForeground);
+                margin-bottom: 10px; min-height: 20px; }
+  .card-title .count { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+                       border-radius: 8px; padding: 0 7px; font-size: 10.5px; text-transform: none; }
+  .card-title .sub { flex: 1; letter-spacing: 0; text-transform: none; font-weight: 400; }
+
+  /* 引擎 Tab（role=tab） */
+  .engine-tabs { display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid var(--vscode-panel-border); }
+  .engine-tab { display: flex; gap: 6px; align-items: center; height: 26px; padding: 0 12px; font-size: 12px;
+                background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+                color: var(--vscode-descriptionForeground); font-family: inherit; margin-bottom: -1px; }
+  .engine-tab:hover { color: var(--vscode-editor-foreground); }
+  .engine-tab[aria-selected="true"] { color: var(--vscode-editor-foreground); border-bottom-color: var(--vscode-focusBorder); }
+  .engine-tab .cnt { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+                     border-radius: 8px; padding: 0 6px; font-size: 10px; }
+
+  /* 指令行：24px 控件行高 */
+  .expr { display: grid; grid-template-columns: 18px 104px 1fr 22px 1fr 118px 24px; gap: 8px;
+          align-items: center; padding: 6px 8px; border-radius: 2px; border: 1px solid transparent; }
+  .expr:hover { background: var(--vscode-list-hoverBackground); }
+  .expr.conflict { border-color: var(--vscode-errorForeground); border-style: dashed; }
+  .expr .chk { accent-color: var(--vscode-focusBorder); width: 13px; height: 13px; }
+  .op { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 24px; padding: 0 8px;
+        border-radius: 2px; font-size: 12px; border: 1px solid var(--vscode-input-border);
+        background: var(--vscode-input-background); cursor: pointer; white-space: nowrap; font-family: inherit; }
+  .op.set, .op.replace { color: var(--vscode-charts-blue); }
+  .op.delete, .op.delLine { color: var(--vscode-errorForeground); }
+  .op.insert { color: var(--vscode-charts-green); }
+  .eq { color: var(--vscode-descriptionForeground); text-align: center; font-size: 12px; }
+  .row-del { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
+             height: 24px; display: inline-flex; align-items: center; justify-content: center; border-radius: 2px; }
+  .row-del:hover { color: var(--vscode-errorForeground); }
+  .expr-meta { grid-column: 2 / -1; font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .expr-meta b { color: var(--vscode-editor-foreground); font-weight: 500; }
+  .add-expr { margin-top: 8px; background: none; border: 1px dashed var(--vscode-input-border);
+              color: var(--vscode-descriptionForeground); width: 100%; height: 26px; border-radius: 2px;
+              cursor: pointer; font-size: 12px; font-family: inherit; }
+  .add-expr:hover { color: var(--vscode-notificationsInfoIcon-foreground); border-color: var(--vscode-focusBorder); }
+  .seg-label { font-size: 11px; color: var(--vscode-descriptionForeground); margin: 8px 0 6px;
+               display: flex; gap: 8px; align-items: center; min-height: 18px; }
+  .seg-label .pill { border: 1px solid var(--vscode-input-border); border-radius: 8px; padding: 0 7px; font-size: 10px; }
+
+  /* ===== 三态勾选（role=checkbox，颜色全走 checkbox-* 变量） ===== */
+  .tri { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; margin: 0;
+         border: 1px solid var(--vscode-checkbox-border); border-radius: 2px;
+         background: var(--vscode-checkbox-background); cursor: pointer; position: relative; flex: none; }
+  .tri:checked, .tri.checked, .tri.some { border-color: var(--vscode-focusBorder); }
+  .tri:checked::after, .tri.checked::after { content: ""; position: absolute; left: 2.5px; top: 4px; width: 7px; height: 4px;
+                        border-left: 1.5px solid var(--vscode-checkbox-foreground);
+                        border-bottom: 1.5px solid var(--vscode-checkbox-foreground);
+                        transform: rotate(-45deg); }
+  .tri.some::after { content: ""; position: absolute; left: 2.5px; top: 5.5px; width: 7px;
+                     border-top: 1.5px solid var(--vscode-checkbox-foreground); }
+
+  /* ===== 文件树 + glob ===== */
+  .scope-wrap { display: grid; grid-template-columns: 1fr minmax(240px, 300px); gap: 12px; }
+  @media (max-width: 760px) { .scope-wrap { grid-template-columns: 1fr; } }
+  .tree-box { border: 1px solid var(--vscode-panel-border); border-radius: 2px; overflow: hidden;
+              background: var(--vscode-editorWidget-background); }
+  .tree-toolbar { display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--vscode-panel-border);
+                  align-items: center; background: var(--vscode-sideBar-background); flex-wrap: wrap; }
+  .tree-toolbar .filter { flex: 1; min-width: 140px; }
+  .chip { font-size: 10.5px; height: 20px; padding: 0 7px; border-radius: 2px; display: inline-flex; align-items: center;
+          border: 1px solid var(--vscode-input-border); color: var(--vscode-descriptionForeground);
+          cursor: pointer; background: none; font-family: inherit; }
+  .chip:hover, .chip.on { color: var(--vscode-notificationsInfoIcon-foreground); border-color: var(--vscode-focusBorder); }
+  .tree-body { max-height: 220px; overflow: auto; padding: 4px 4px; }
+  .trow { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; border-radius: 2px;
+          font-size: 12px; cursor: default; }
+  .trow:hover { background: var(--vscode-list-hoverBackground); }
+  .trow.dim { opacity: .45; }
+  .trow .arrow { width: 14px; color: var(--vscode-descriptionForeground); flex: none;
+                 display: inline-flex; align-items: center; }
+  .trow .fname { font-family: var(--vscode-editor-font-family); white-space: nowrap; overflow: hidden;
+                 text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; }
+  .trow .fname .hl { color: var(--vscode-notificationsInfoIcon-foreground); }
+  .trow .grow { flex: 1; }
+  .hit-badge { font-size: 10px; color: var(--vscode-notificationsInfoIcon-foreground);
+               border: 1px solid var(--vscode-focusBorder); border-radius: 2px; padding: 0 4px; flex: none; }
+  .ftype { color: var(--vscode-descriptionForeground); font-size: 10px; flex: none; }
+  .glob-side { display: flex; flex-direction: column; gap: 8px; }
+  .glob-side .lbl { font-size: 11px; color: var(--vscode-descriptionForeground); }
+  .glob-side .ro-summary { font-size: 11.5px; color: var(--vscode-descriptionForeground);
+                            background: var(--vscode-input-background); border: 1px dashed var(--vscode-input-border);
+                            border-radius: 2px; padding: 6px 8px; display: flex; align-items: center; gap: 8px; }
+  .glob-side .ro-summary .btn { margin-left: auto; }
+
+  /* ===== 结果区 ===== */
+  .results { display: grid; grid-template-columns: minmax(280px, 400px) 1fr; gap: 0; }
+  @media (max-width: 760px) { .results { grid-template-columns: 1fr; } }
+  .rtree { border-right: 1px solid var(--vscode-panel-border); padding: 8px 6px; max-height: 290px; overflow: auto; }
+  @media (max-width: 760px) { .rtree { border-right: none; border-bottom: 1px solid var(--vscode-panel-border); } }
+  .tree-row { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; border-radius: 2px;
+              font-size: 12px; cursor: pointer; }
+  .tree-row:hover { background: var(--vscode-list-hoverBackground); }
+  .tree-row.dir { font-weight: 500; }
+  .tree-row.file { padding-left: 22px; }
+  .tree-row.match-row { padding-left: 36px; color: var(--vscode-descriptionForeground); }
+  .tree-row.selected { background: var(--vscode-list-inactiveSelectionBackground); }
+  .tree-row .arrow { width: 14px; color: var(--vscode-descriptionForeground); flex: none;
+                     display: inline-flex; align-items: center; }
+  .tree-row .fname { font-family: var(--vscode-editor-font-family); white-space: nowrap;
+                     overflow: hidden; text-overflow: ellipsis; }
+  .badge { font-size: 10px; border-radius: 2px; padding: 0 5px; flex: none; height: 16px;
+           display: inline-flex; align-items: center; }
+  .badge.set, .badge.replace { color: var(--vscode-charts-blue); border: 1px solid var(--vscode-charts-blue); }
+  .badge.delete, .badge.delLine { color: var(--vscode-errorForeground); border: 1px solid var(--vscode-errorForeground); }
+  .badge.insert { color: var(--vscode-charts-green); border: 1px solid var(--vscode-charts-green); }
+  .badge.warn { color: var(--vscode-editorWarning-foreground); border: 1px solid var(--vscode-editorWarning-foreground); }
+  .tree-row .grow { flex: 1; }
+  .n-matches { color: var(--vscode-descriptionForeground); font-size: 11px; flex: none; }
+  .jump { background: none; border: none; color: var(--vscode-descriptionForeground); cursor: pointer;
+          height: 22px; width: 22px; display: inline-flex; align-items: center; justify-content: center;
+          border-radius: 2px; }
+  .jump:hover { color: var(--vscode-notificationsInfoIcon-foreground); }
+  .err-dir { color: var(--vscode-errorForeground); }
+
+  /* ===== Diff（语法点缀色全部用官方 charts-* 变量） ===== */
+  .diff { padding: 10px 14px; max-height: 290px; overflow: auto; }
+  .diff-head { font-size: 11.5px; color: var(--vscode-descriptionForeground); margin-bottom: 8px;
+               display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .diff-head .path { font-family: var(--vscode-editor-font-family); color: var(--vscode-editor-foreground);
+                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .diff-body { font-family: var(--vscode-editor-font-family); font-size: 12px; line-height: 19px;
+               border: 1px solid var(--vscode-panel-border); border-radius: 2px; overflow: hidden;
+               background: var(--vscode-textCodeBlock-background); }
+  .diff-line { padding: 0 10px; white-space: pre; display: flex; min-height: 19px; }
+  .diff-line .ln { width: 34px; text-align: right; margin-right: 12px; color: var(--vscode-descriptionForeground);
+                   flex: none; user-select: none; }
+  .diff-line.ctx { color: var(--vscode-descriptionForeground); }
+  .diff-line.del { background: var(--vscode-diffEditor-removedLineBackground); }
+  .diff-line.add { background: var(--vscode-diffEditor-insertedLineBackground); }
+  .diff-line .sgn { width: 14px; flex: none; }
+  .diff-line.del .sgn { color: var(--vscode-errorForeground); }
+  .diff-line.add .sgn { color: var(--vscode-charts-green); }
+  .k { color: var(--vscode-charts-blue); } .v { color: var(--vscode-charts-orange); }
+  .n { color: var(--vscode-charts-purple); } .cm { color: var(--vscode-descriptionForeground); }
+  .diff-warn { margin-top: 10px; font-size: 11.5px; color: var(--vscode-editorWarning-foreground);
+               display: flex; align-items: center; gap: 6px; }
+
+  /* 底栏 */
+  .footer { display: flex; align-items: center; gap: 10px; padding: 10px 16px; min-height: 44px;
+            background: var(--vscode-sideBar-background); border-top: 1px solid var(--vscode-panel-border);
+            position: sticky; bottom: 0; flex-wrap: wrap; }
+  .footer .stat { font-size: 12px; }
+  .footer .stat b { color: var(--vscode-notificationsInfoIcon-foreground); }
+  .footer .undo-hint { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 11px; }
+
+  /* ===== 四态规范演示条 ===== */
+  .states { max-width: 1120px; margin: 14px auto 0; display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .st-card { border: 1px solid var(--vscode-panel-border); border-radius: 4px; padding: 10px 12px;
+             background: var(--vscode-editorWidget-background); }
+  .st-card h3 { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground);
+                text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .sk { height: 8px; border-radius: 2px; margin-bottom: 6px;
+        background: color-mix(in srgb, var(--vscode-editor-foreground) 12%, transparent); }
+  .st-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px 0; text-align: center; }
+  .st-empty svg { width: 22px; height: 22px; color: var(--vscode-descriptionForeground); }
+  .st-empty p { font-size: 11.5px; color: var(--vscode-descriptionForeground); }
+  .st-err { display: flex; gap: 8px; align-items: flex-start; }
+  .st-err svg { color: var(--vscode-errorForeground); margin-top: 1px; }
+  .st-err p { font-size: 11.5px; color: var(--vscode-errorForeground); margin-bottom: 8px; }
+
+  /* 演示主题切换器（仅原型演示用，真实环境由 VS Code 注入 body class） */
+  .theme-demo { position: fixed; right: 16px; top: 12px; display: flex; gap: 4px; align-items: center;
+                padding: 4px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 4px;
+                background: var(--vscode-editorWidget-background); z-index: 10; flex-wrap: wrap; max-width: 60vw; }
+  .theme-demo .lbl { font-size: 10.5px; color: var(--vscode-descriptionForeground); margin-right: 2px; }
+  .theme-demo button { height: 20px; padding: 0 8px; font-size: 11px; border-radius: 2px; cursor: pointer;
+                       background: var(--vscode-button-secondaryBackground);
+                       color: var(--vscode-button-secondaryForeground);
+                       border: 1px solid var(--vscode-button-border); font-family: inherit; }
+  .theme-demo button.on { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+
+  .tooltip-note { margin: 14px auto 0; font-size: 11px; color: var(--vscode-descriptionForeground);
+                  line-height: 1.8; max-width: 1120px; }
+  .tooltip-note code { color: var(--vscode-textLink-foreground); }
+</style>
+
+<!-- ============================================================
+     演示兜底值（仅本原型使用）：
+     真实 Webview 中，VS Code 会按 body.vscode-* class 注入全部
+     --vscode-* 变量；实现扩展时删除整个 <style data-demo-theme>，
+     仅保留上方主样式。HC 主题补 --vscode-contrastBorder。
+     ============================================================ -->
+<style data-demo-theme>
+  body.vscode-dark, body.vscode-light, body.vscode-high-contrast, body.vscode-high-contrast-light {
+    --vscode-font-family: system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --vscode-font-size: 13px;
+    --vscode-editor-font-family: "Cascadia Code", ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  body.vscode-dark {
+    --vscode-editor-background: #1f1f1f; --vscode-sideBar-background: #181818;
+    --vscode-editorWidget-background: #202020; --vscode-textCodeBlock-background: #1a1a1a;
+    --vscode-input-background: #313131; --vscode-input-foreground: #cccccc;
+    --vscode-input-border: #3c3c3c; --vscode-input-placeholderForeground: #989898;
+    --vscode-dropdown-background: #313131; --vscode-dropdown-foreground: #cccccc;
+    --vscode-focusBorder: #0078d4; --vscode-button-background: #0078d4;
+    --vscode-button-foreground: #ffffff; --vscode-button-hoverBackground: #026ec1;
+    --vscode-button-secondaryBackground: #313131; --vscode-button-secondaryForeground: #cccccc;
+    --vscode-button-secondaryHoverBackground: #3a3a3a; --vscode-button-border: transparent;
+    --vscode-list-hoverBackground: #2a2d2e; --vscode-list-inactiveSelectionBackground: #37373d;
+    --vscode-list-activeSelectionBackground: #04395e; --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-badge-background: #4d4d4d; --vscode-badge-foreground: #ffffff;
+    --vscode-descriptionForeground: #9d9d9d; --vscode-editor-foreground: #cccccc;
+    --vscode-disabledForeground: #5a5a5a; --vscode-panel-border: #2b2b2b;
+    --vscode-checkbox-background: #313131; --vscode-checkbox-foreground: #cccccc; --vscode-checkbox-border: #3c3c3c;
+    --vscode-errorForeground: #f14c4c; --vscode-editorWarning-foreground: #cca700;
+    --vscode-notificationsInfoIcon-foreground: #3794ff; --vscode-inputValidation-errorBorder: #be1100;
+    --vscode-charts-blue: #3794ff; --vscode-charts-red: #f14c4c; --vscode-charts-green: #89d185;
+    --vscode-charts-yellow: #cca700; --vscode-charts-orange: #d18616; --vscode-charts-purple: #b180d7;
+    --vscode-diffEditor-removedLineBackground: rgba(255, 0, 0, .13);
+    --vscode-diffEditor-insertedLineBackground: rgba(146, 208, 80, .13);
+    --vscode-textLink-foreground: #4daafc; --vscode-contrastBorder: transparent;
+    --vscode-scrollbarSlider-background: rgba(121, 121, 121, .4);
+    --vscode-scrollbarSlider-hoverBackground: rgba(148, 148, 148, .5);
+    --vscode-scrollbarSlider-activeBackground: rgba(167, 167, 167, .6);
+  }
+  body.vscode-light {
+    --vscode-editor-background: #ffffff; --vscode-sideBar-background: #f8f8f8;
+    --vscode-editorWidget-background: #ffffff; --vscode-textCodeBlock-background: #f8f8f8;
+    --vscode-input-background: #ffffff; --vscode-input-foreground: #3b3b3b;
+    --vscode-input-border: #cecece; --vscode-input-placeholderForeground: #767676;
+    --vscode-dropdown-background: #ffffff; --vscode-dropdown-foreground: #3b3b3b;
+    --vscode-focusBorder: #005fb8; --vscode-button-background: #0078d4;
+    --vscode-button-foreground: #ffffff; --vscode-button-hoverBackground: #026ec1;
+    --vscode-button-secondaryBackground: #ffffff; --vscode-button-secondaryForeground: #3b3b3b;
+    --vscode-button-secondaryHoverBackground: #e8e8e8; --vscode-button-border: #cecece;
+    --vscode-list-hoverBackground: #e8e8e8; --vscode-list-inactiveSelectionBackground: #e4e6f1;
+    --vscode-list-activeSelectionBackground: #0060c0; --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-badge-background: #c4c4c4; --vscode-badge-foreground: #3b3b3b;
+    --vscode-descriptionForeground: #616161; --vscode-editor-foreground: #3b3b3b;
+    --vscode-disabledForeground: #a1a1a1; --vscode-panel-border: #e5e5e5;
+    --vscode-checkbox-background: #ffffff; --vscode-checkbox-foreground: #3b3b3b; --vscode-checkbox-border: #cecece;
+    --vscode-errorForeground: #cd3131; --vscode-editorWarning-foreground: #8a7500;
+    --vscode-notificationsInfoIcon-foreground: #005fb8; --vscode-inputValidation-errorBorder: #e60011;
+    --vscode-charts-blue: #005fb8; --vscode-charts-red: #cd3131; --vscode-charts-green: #107c10;
+    --vscode-charts-yellow: #bf8803; --vscode-charts-orange: #d18616; --vscode-charts-purple: #652d90;
+    --vscode-diffEditor-removedLineBackground: rgba(255, 0, 0, .08);
+    --vscode-diffEditor-insertedLineBackground: rgba(146, 208, 80, .14);
+    --vscode-textLink-foreground: #005fb8; --vscode-contrastBorder: transparent;
+    --vscode-scrollbarSlider-background: rgba(100, 100, 100, .4);
+    --vscode-scrollbarSlider-hoverBackground: rgba(121, 121, 121, .5);
+    --vscode-scrollbarSlider-activeBackground: rgba(148, 148, 148, .6);
+  }
+  body.vscode-high-contrast {
+    --vscode-editor-background: #000000; --vscode-sideBar-background: #000000;
+    --vscode-editorWidget-background: #000000; --vscode-textCodeBlock-background: #000000;
+    --vscode-input-background: #000000; --vscode-input-foreground: #ffffff;
+    --vscode-input-border: #6fc3df; --vscode-input-placeholderForeground: #a0a0a0;
+    --vscode-focusBorder: #f38518; --vscode-button-background: #ffffff;
+    --vscode-button-foreground: #000000; --vscode-button-hoverBackground: #ffffff;
+    --vscode-button-secondaryBackground: #000000; --vscode-button-secondaryForeground: #ffffff;
+    --vscode-button-secondaryHoverBackground: #1f1f1f; --vscode-button-border: #ffffff;
+    --vscode-list-hoverBackground: rgba(255, 255, 255, .09); --vscode-list-inactiveSelectionBackground: #244d70;
+    --vscode-list-activeSelectionBackground: #6fc3df; --vscode-list-activeSelectionForeground: #000000;
+    --vscode-badge-background: #ffffff; --vscode-badge-foreground: #000000;
+    --vscode-descriptionForeground: #cccccc; --vscode-editor-foreground: #ffffff;
+    --vscode-disabledForeground: #7f7f7f; --vscode-panel-border: #6fc3df;
+    --vscode-checkbox-background: #000000; --vscode-checkbox-foreground: #ffffff; --vscode-checkbox-border: #6fc3df;
+    --vscode-errorForeground: #f14c4c; --vscode-editorWarning-foreground: #ffd700;
+    --vscode-notificationsInfoIcon-foreground: #6699ff; --vscode-inputValidation-errorBorder: #f14c4c;
+    --vscode-charts-blue: #6699ff; --vscode-charts-red: #f14c4c; --vscode-charts-green: #89d185;
+    --vscode-charts-yellow: #ffd700; --vscode-charts-orange: #d18616; --vscode-charts-purple: #b180d7;
+    --vscode-diffEditor-removedLineBackground: rgba(255, 0, 0, .35);
+    --vscode-diffEditor-insertedLineBackground: rgba(146, 208, 80, .3);
+    --vscode-textLink-foreground: #6699ff; --vscode-contrastBorder: #6fc3df;
+    --vscode-scrollbarSlider-background: rgba(160, 160, 160, .5);
+    --vscode-scrollbarSlider-hoverBackground: rgba(190, 190, 190, .6);
+    --vscode-scrollbarSlider-activeBackground: rgba(220, 220, 220, .7);
+  }
+  body.vscode-high-contrast-light {
+    --vscode-editor-background: #ffffff; --vscode-sideBar-background: #ffffff;
+    --vscode-editorWidget-background: #ffffff; --vscode-textCodeBlock-background: #ffffff;
+    --vscode-input-background: #ffffff; --vscode-input-foreground: #292929;
+    --vscode-input-border: #0f4a85; --vscode-input-placeholderForeground: #5f5f5f;
+    --vscode-focusBorder: #0f4a85; --vscode-button-background: #0f4a85;
+    --vscode-button-foreground: #ffffff; --vscode-button-hoverBackground: #0b3a68;
+    --vscode-button-secondaryBackground: #ffffff; --vscode-button-secondaryForeground: #292929;
+    --vscode-button-secondaryHoverBackground: #eef2f7; --vscode-button-border: #0f4a85;
+    --vscode-list-hoverBackground: rgba(15, 74, 133, .08); --vscode-list-inactiveSelectionBackground: #dbe6f3;
+    --vscode-list-activeSelectionBackground: #0f4a85; --vscode-list-activeSelectionForeground: #ffffff;
+    --vscode-badge-background: #0f4a85; --vscode-badge-foreground: #ffffff;
+    --vscode-descriptionForeground: #5f5f5f; --vscode-editor-foreground: #292929;
+    --vscode-disabledForeground: #8a8a8a; --vscode-panel-border: #0f4a85;
+    --vscode-checkbox-background: #ffffff; --vscode-checkbox-foreground: #292929; --vscode-checkbox-border: #0f4a85;
+    --vscode-errorForeground: #cd3131; --vscode-editorWarning-foreground: #8a7500;
+    --vscode-notificationsInfoIcon-foreground: #005fb8; --vscode-inputValidation-errorBorder: #cd3131;
+    --vscode-charts-blue: #005fb8; --vscode-charts-red: #cd3131; --vscode-charts-green: #107c10;
+    --vscode-charts-yellow: #bf8803; --vscode-charts-orange: #d18616; --vscode-charts-purple: #652d90;
+    --vscode-diffEditor-removedLineBackground: rgba(205, 49, 49, .12);
+    --vscode-diffEditor-insertedLineBackground: rgba(16, 124, 16, .12);
+    --vscode-textLink-foreground: #005fb8; --vscode-contrastBorder: #0f4a85;
+    --vscode-scrollbarSlider-background: rgba(100, 100, 100, .4);
+    --vscode-scrollbarSlider-hoverBackground: rgba(121, 121, 121, .5);
+    --vscode-scrollbarSlider-activeBackground: rgba(148, 148, 148, .6);
+  }
+
+  /* HC 主题：层级不靠底色，全部加显式边框（铁律 1） */
+  body.vscode-high-contrast :is(.panel, .tree-box, .diff-body, .input, .op, .chip, .add-expr, .expr.conflict, .st-card),
+  body.vscode-high-contrast-light :is(.panel, .tree-box, .diff-body, .input, .op, .chip, .add-expr, .expr.conflict, .st-card) {
+    border-color: var(--vscode-contrastBorder);
+  }
+</style>
+</head>
+
+<body class="vscode-dark">
+
+<!-- 内联 SVG 图标（原型离线近似示意；实现时统一替换为本地打包的 Codicon） -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-chev-d" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4"/></symbol>
+  <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 16 16"><path d="M3 13l1-3.5L11.5 2 14 4.5 6.5 12 3 13z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3 5h10M6.5 5V3.5h3V5M4.5 5l.6 8.5h5.8L11.5 5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 16 16"><path d="M4 5.5h8m0 0L10 3.5m2 2l-2 2M12 10.5H4m0 0l2-2m-2 2l2 2"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.5L14.5 13h-13L8 2.5zM8 7v3M8 11.6v.1"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4"/><path d="M10.2 10.2L14 14"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.5 4.5h4.5l1.5 2h7v6.5h-13V4.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 16 16"><path d="M4 1.5h5.5l3 3v10H4V1.5zM9.5 1.5v3h3"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></symbol>
+  <symbol id="i-goto" viewBox="0 0 16 16"><path d="M5 11L11 5M6 5h5v5"/></symbol>
+  <symbol id="i-remove" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M5.8 8h4.4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><path d="M8 2v2M8 12v2M2 8h2M12 8h2M4 4l1.4 1.4M10.6 10.6L12 12M12 4l-1.4 1.4M5.4 10.6L4 12"/></symbol>
+  <symbol id="i-type" viewBox="0 0 16 16"><path d="M3 4h10M8 4v9"/></symbol>
+</svg>
+
+<!-- 演示用主题切换器（真实环境删除） -->
+<div class="theme-demo" role="group" aria-label="原型演示：主题切换（真实环境由 VS Code 注入 body class）">
+  <span class="lbl">主题演示</span>
+  <button data-theme="vscode-dark" class="on" aria-pressed="true">Dark</button>
+  <button data-theme="vscode-light" aria-pressed="false">Light</button>
+  <button data-theme="vscode-high-contrast" aria-pressed="false">HC</button>
+  <button data-theme="vscode-high-contrast-light" aria-pressed="false">HC Light</button>
+</div>
+
+<div class="panel">
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <h1><svg class="ic"><use href="#i-gear"/></svg>StructEdit 批量编辑</h1>
+    <span class="hint">结构化 · JSON/YAML　文本 · 全类型 sed</span>
+    <div class="spacer"></div>
+    <button class="btn">导入表达式集</button>
+    <button class="btn">导出</button>
+    <button class="btn">历史 ▾</button>
+  </div>
+
+  <!-- 概览条 -->
+  <div class="overview">
+    <span class="stat">变更 <b>55</b></span>
+    <span class="stat">文件 <b>17</b></span>
+    <span class="stat warn">警示 <b>2</b></span>
+    <span class="stat err">解析失败 <b>3</b></span>
+    <span class="stat">冲突 <b>0</b></span>
+    <span class="scan">扫描 12/17<div class="bar" role="progressbar" aria-valuenow="12" aria-valuemin="0" aria-valuemax="17"><i></i></div><button class="btn mini">取消</button></span>
+  </div>
+
+  <!-- ① 指令 -->
+  <section class="card">
+    <div class="card-title">指令 <span class="count">4</span><span class="sub">双引擎可混用 · 同文件内补丁不得重叠</span></div>
+
+    <div class="engine-tabs" role="tablist" aria-label="指令引擎">
+      <button class="engine-tab" role="tab" aria-selected="true" data-seg="seg-structured"><svg class="ic s12"><use href="#i-gear"/></svg>结构化路径 <span class="cnt">3</span></button>
+      <button class="engine-tab" role="tab" aria-selected="false" data-seg="seg-text"><svg class="ic s12"><use href="#i-type"/></svg>文本 / sed <span class="cnt">1</span></button>
+    </div>
+
+    <!-- 结构化区 -->
+    <div class="seg-structured">
+      <div class="seg-label">结构化 · JSON / YAML <span class="pill">set</span><span class="pill">delete</span><span class="pill">insert</span></div>
+
+      <div class="expr">
+        <input type="checkbox" class="chk" checked aria-label="启用该指令">
+        <button class="op set"><svg class="ic s12"><use href="#i-pencil"/></svg>设置值 ▾</button>
+        <input class="input mono" value="$.spec.template.spec.containers[*].image" spellcheck="false" aria-label="路径">
+        <span class="eq" aria-hidden="true">=</span>
+        <input class="input mono" value="registry.acme/payments:v2" spellcheck="false" aria-label="新值">
+        <select class="input" aria-label="值类型"><option>自动（沿用旧值）</option><option>字符串</option></select>
+        <button class="row-del" aria-label="删除该指令"><svg class="ic s12"><use href="#i-close"/></svg></button>
+        <div class="expr-meta">旧值分布：<b>:v1 ×31</b> · <b>:v2 ×8</b> · <b>:v3 ×4</b>　命中 43 处 · 17 个文件</div>
+      </div>
+
+      <div class="expr">
+        <input type="checkbox" class="chk" checked aria-label="启用该指令">
+        <button class="op delete"><svg class="ic s12"><use href="#i-trash"/></svg>删除 ▾</button>
+        <input class="input mono" value="$.metadata.annotations.\"deployment.kubernetes.io/revision\"" spellcheck="false" aria-label="路径">
+        <span></span><span></span><span></span>
+        <button class="row-del" aria-label="删除该指令"><svg class="ic s12"><use href="#i-close"/></svg></button>
+        <div class="expr-meta">命中 12 处 · 9 个文件</div>
+      </div>
+
+      <div class="expr">
+        <input type="checkbox" class="chk" checked aria-label="启用该指令">
+        <button class="op insert"><svg class="ic s12"><use href="#i-plus"/></svg>新增 ▾</button>
+        <input class="input mono" value="$.spec.template.spec.containers[*].resources.limits" spellcheck="false" aria-label="路径">
+        <span class="eq" aria-hidden="true">=</span>
+        <input class="input mono" value="{ &quot;memory&quot;: &quot;512Mi&quot; }" spellcheck="false" aria-label="新值">
+        <select class="input" aria-label="值类型"><option>对象</option></select>
+        <button class="row-del" aria-label="删除该指令"><svg class="ic s12"><use href="#i-close"/></svg></button>
+        <div class="expr-meta">父路径存在于 15 个文件，追加于对象末尾（不改变其余键顺序）</div>
+      </div>
+    </div>
+
+    <!-- 文本区 -->
+    <div class="seg-text" hidden>
+      <div class="seg-label">文本 · 所有文件类型 <span class="pill">s/…/…/ 替换</span><span class="pill">/…/d 删除行</span></div>
+
+      <div class="expr">
+        <input type="checkbox" class="chk" checked aria-label="启用该指令">
+        <button class="op replace"><svg class="ic s12"><use href="#i-swap"/></svg>替换 ▾</button>
+        <input class="input mono" value="s|registry\.acme/payments:v1|registry.acme/payments:v2|g" spellcheck="false" aria-label="sed 表达式或模式">
+        <span class="eq" aria-hidden="true">→</span>
+        <input class="input mono" placeholder="命中预览：v1（.env ×2 · README.md ×1 …）" spellcheck="false" aria-label="替换为">
+        <select class="input" aria-label="标志"><option>标志：g i</option></select>
+        <button class="row-del" aria-label="删除该指令"><svg class="ic s12"><use href="#i-close"/></svg></button>
+        <div class="expr-meta">已识别 sed 简写并展开（模式 <b>registry\.acme/payments:v1</b> → <b>…:v2</b>）· 命中 3 处 · 3 个文件（.env / .md / .sh）· 二进制与非 UTF-8 文件已自动跳过</div>
+      </div>
+
+      <div class="expr">
+        <input type="checkbox" class="chk" checked aria-label="启用该指令">
+        <button class="op delLine"><svg class="ic s12"><use href="#i-remove"/></svg>删除行 ▾</button>
+        <input class="input mono" value="/^\s*#\s*TODO/d" spellcheck="false" aria-label="删除行模式">
+        <span></span><span></span>
+        <span style="font-size:11px;color:var(--vscode-descriptionForeground)">仅 .py / .sh（可用类型过滤限定）</span>
+        <button class="row-del" aria-label="删除该指令"><svg class="ic s12"><use href="#i-close"/></svg></button>
+        <div class="expr-meta">命中 27 行 · 6 个文件 · 删除整行（含换行符）</div>
+      </div>
+    </div>
+
+    <button class="add-expr"><svg class="ic s12" style="vertical-align:-2px"><use href="#i-plus"/></svg> 添加指令　<span style="color:var(--vscode-descriptionForeground)">支持粘贴 sed 简写自动展开；编辑器中右键「StructEdit」可反填路径或选区</span></button>
+  </section>
+
+  <!-- ② 文件范围：树 + glob -->
+  <section class="card">
+    <div class="card-title">文件范围 <span class="count">17 已选</span><span class="sub">树勾选与 glob 双向同步</span></div>
+    <div class="scope-wrap">
+      <div class="tree-box">
+        <div class="tree-toolbar">
+          <input class="input filter mono" placeholder="过滤文件名 / 路径…（Ctrl+F）" value="conf" spellcheck="false" aria-label="过滤文件">
+          <button class="chip on" aria-pressed="true">*.yaml</button><button class="chip" aria-pressed="false">*.json</button><button class="chip" aria-pressed="false">*.env</button>
+          <button class="btn mini">仅显示已选</button><button class="btn mini"><svg class="ic s12"><use href="#i-eye"/></svg>只看有命中</button>
+        </div>
+        <div class="tree-body" role="tree" aria-label="文件选择树">
+          <div class="trow" role="treeitem" aria-level="1"><span class="arrow"><svg class="ic s12"><use href="#i-chev-d"/></svg></span><span class="tri some" role="checkbox" aria-checked="mixed" tabindex="0" aria-label="config 目录"></span><span class="fname"><svg class="ic s12"><use href="#i-folder"/></svg><span class="hl">conf</span>ig</span><span class="grow"></span><span class="hit-badge">●6</span><span class="ftype">4/9 已选</span></div>
+          <div class="trow" role="treeitem" aria-level="2"><span class="arrow"><svg class="ic s12"><use href="#i-chev-d"/></svg></span><span class="tri some" role="checkbox" aria-checked="mixed" tabindex="0" aria-label="prod 目录"></span><span class="fname">prod</span><span class="grow"></span><span class="hit-badge">●6</span><span class="ftype">3/4</span></div>
+          <div class="trow" role="treeitem" aria-level="3"><span class="arrow"></span><span class="tri" role="checkbox" aria-checked="true" tabindex="0" aria-label="app.yaml"></span><span class="fname"><svg class="ic s12"><use href="#i-file"/></svg>app.yaml</span><span class="grow"></span><span class="hit-badge">3</span></div>
+          <div class="trow" role="treeitem" aria-level="3"><span class="arrow"></span><span class="tri" role="checkbox" aria-checked="true" tabindex="0" aria-label="values.yaml"></span><span class="fname"><svg class="ic s12"><use href="#i-file"/></svg>values.yaml</span><span class="grow"></span><span class="hit-badge">4</span></div>
+          <div class="trow" role="treeitem" aria-level="3"><span class="arrow"></span><span class="tri" role="checkbox" aria-checked="false" tabindex="0" aria-label="legacy.conf"></span><span class="fname"><svg class="ic s12"><use href="#i-file"/></svg>legacy.conf</span><span class="grow"></span></div>
+          <div class="trow" role="treeitem" aria-level="2"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="tri" role="checkbox" aria-checked="true" tabindex="0" aria-label="staging 目录"></span><span class="fname">staging</span><span class="grow"></span><span class="hit-badge">●8</span><span class="ftype">8/8</span></div>
+          <div class="trow dim" role="treeitem" aria-level="1"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="tri" role="checkbox" aria-checked="false" tabindex="0" aria-label="docs 目录"></span><span class="fname"><svg class="ic s12"><use href="#i-folder"/></svg>docs</span><span class="grow"></span><span class="ftype">被过滤隐藏</span></div>
+          <div class="trow" role="treeitem" aria-level="1"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="tri" role="checkbox" aria-checked="true" tabindex="0" aria-label="scripts 目录"></span><span class="fname"><svg class="ic s12"><use href="#i-folder"/></svg>scripts</span><span class="grow"></span><span class="hit-badge">●4</span><span class="ftype">5/5</span></div>
+        </div>
+      </div>
+      <div class="glob-side">
+        <label class="lbl" for="glob-include">等效 glob（树勾选自动生成 · 可改为手输）</label>
+        <input class="input mono" id="glob-include" value="config/**/*.{json,yaml,yml}, scripts/**" spellcheck="false">
+        <label class="lbl" for="glob-exclude">排除</label>
+        <input class="input mono" id="glob-exclude" value="**/legacy/**" spellcheck="false">
+        <div class="ro-summary">树上另有 2 个手动取消的文件（悬浮查看清单）<button class="btn mini">重置为纯 glob</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ③ 结果 -->
+  <section class="card" style="padding:0">
+    <div class="results">
+      <div class="rtree" role="tree" aria-label="命中结果树">
+        <div class="tree-row dir" role="treeitem" aria-expanded="true" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-d"/></svg></span><span class="fname">config/prod</span><span class="grow"></span><span class="n-matches">6 处</span></div>
+        <div class="tree-row file" role="treeitem" aria-expanded="true" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-d"/></svg></span><span class="fname">app.yaml</span><span class="grow"></span><span class="n-matches">3</span></div>
+        <div class="tree-row match-row selected" role="treeitem" tabindex="0"><span class="fname">containers[0].image</span><span class="grow"></span><span class="badge set">set</span><button class="jump" aria-label="在编辑器中查看"><svg class="ic s12"><use href="#i-goto"/></svg></button></div>
+        <div class="tree-row match-row" role="treeitem" tabindex="0"><span class="fname">containers[0].resources.limits</span><span class="grow"></span><span class="badge insert">ins</span><button class="jump" aria-label="在编辑器中查看"><svg class="ic s12"><use href="#i-goto"/></svg></button></div>
+        <div class="tree-row file" role="treeitem" aria-expanded="false" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="fname">values.yaml</span><span class="grow"></span><span class="badge warn"><svg class="ic s12" style="width:10px;height:10px"><use href="#i-warn"/></svg> 锚点</span><span class="n-matches">4</span></div>
+        <div class="tree-row dir" role="treeitem" aria-expanded="false" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="fname">config/staging</span><span class="grow"></span><span class="n-matches">8 处</span></div>
+        <div class="tree-row dir" role="treeitem" aria-expanded="true" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-d"/></svg></span><span class="fname">scripts（文本引擎）</span><span class="grow"></span><span class="n-matches">4 处</span></div>
+        <div class="tree-row match-row" role="treeitem" tabindex="0"><span class="fname">deploy.sh:12　registry.acme/payments:v1</span><span class="grow"></span><span class="badge replace">sed</span><button class="jump" aria-label="在编辑器中查看"><svg class="ic s12"><use href="#i-goto"/></svg></button></div>
+        <div class="tree-row match-row" role="treeitem" tabindex="0"><span class="fname">deploy.sh:40　# TODO: remove…</span><span class="grow"></span><span class="badge delLine">删行</span><button class="jump" aria-label="在编辑器中查看"><svg class="ic s12"><use href="#i-goto"/></svg></button></div>
+        <div class="tree-row dir err-dir" role="treeitem" aria-expanded="false" tabindex="0"><span class="arrow"><svg class="ic s12"><use href="#i-chev-r"/></svg></span><span class="fname">无法解析（3）</span><span class="grow"></span><span class="n-matches">仅结构化跳过</span></div>
+      </div>
+
+      <div class="diff">
+        <div class="diff-head">
+          <span class="path">config/prod/app.yaml : <span class="mono">$.spec.template.spec.containers[0].image</span></span>
+          <span>1 / 55</span>
+        </div>
+        <div class="diff-body">
+          <div class="diff-line ctx"><span class="ln">120</span><span class="sgn"></span>      <span class="k">image</span>: <span class="v">registry.acme/payments:v1</span> <span class="cm"># 主镜像</span></div>
+          <div class="diff-line del"><span class="ln">120</span><span class="sgn">−</span>      <span class="k">image</span>: <span class="v">registry.acme/payments:v1</span></div>
+          <div class="diff-line add"><span class="ln">120</span><span class="sgn">＋</span>      <span class="k">image</span>: <span class="v">registry.acme/payments:v2</span></div>
+          <div class="diff-line ctx"><span class="ln">121</span><span class="sgn"></span>      <span class="k">replicas</span>: <span class="n">3</span></div>
+          <div class="diff-line ctx"><span class="ln">122</span><span class="sgn"></span>      <span class="k">command</span>: [<span class="v">"server"</span>, <span class="v">"--port"</span>, <span class="v">"8080"</span>]</div>
+        </div>
+        <div class="diff-warn"><svg class="ic s12"><use href="#i-warn"/></svg>第 131 行 replicas 值经锚点 &amp;base 共享，修改会影响 2 处引用（可在结果树中取消勾选该条目）</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 底栏 -->
+  <div class="footer">
+    <span class="stat">将应用 <b>55</b> 处变更（<b>17</b> 个文件，已勾选）</span>
+    <button class="btn">预览全部 Diff</button>
+    <button class="btn primary">应用 55 处变更 →</button>
+    <span class="undo-hint">应用后可一次 <b>Ctrl+Z</b> 整体撤销 · 命中值之外逐字节保持原样</span>
+  </div>
+</div>
+
+<!-- 四态规范演示条（实现时各区块都要有这四态） -->
+<div class="states">
+  <div class="st-card">
+    <h3>① 加载中</h3>
+    <div class="sk" style="width:72%"></div>
+    <div class="sk" style="width:94%"></div>
+    <div class="sk" style="width:58%"></div>
+    <div class="sk" style="width:83%"></div>
+    <p style="font-size:10.5px;color:var(--vscode-descriptionForeground);margin-top:4px">骨架条 + 细进度条，不用全屏遮罩</p>
+  </div>
+  <div class="st-card">
+    <h3>② 空态</h3>
+    <div class="st-empty">
+      <svg class="ic"><use href="#i-search"/></svg>
+      <p>没有匹配的文件</p>
+      <button class="btn primary mini">放宽范围（移除 *.yaml 过滤）</button>
+    </div>
+  </div>
+  <div class="st-card">
+    <h3>③ 错误态</h3>
+    <div class="st-err">
+      <svg class="ic s12"><use href="#i-warn"/></svg>
+      <div>
+        <p>3 个文件解析失败（首个：values.yaml:12 期待缩进）</p>
+        <button class="btn mini">查看错误</button> <button class="btn mini">跳过这些文件</button>
+      </div>
+    </div>
+  </div>
+  <div class="st-card">
+    <h3>④ 禁用态</h3>
+    <p style="font-size:11.5px;color:var(--vscode-descriptionForeground);margin-bottom:8px">未选择文件范围时，应用按钮禁用：</p>
+    <button class="btn primary" disabled title="先选择文件范围">应用变更 →</button>
+    <p style="font-size:10.5px;color:var(--vscode-disabledForeground);margin-top:6px">--vscode-disabledForeground + tooltip 说明启用条件</p>
+  </div>
+</div>
+
+<p class="tooltip-note">
+  v1.2 原型（对齐《UI 铁律》）：① 主样式零硬编码颜色，全部 <code>--vscode-*</code> 官方变量（右上角可切换 Dark / Light / HC / HC Light 四主题演示，真实环境由 VS Code 注入 <code>body.vscode-*</code> class，实现时删除演示兜底块）；② HC 主题下所有层级加 1px <code>--vscode-contrastBorder</code> 显式边框，不靠底色区分；③ 圆角收敛到 2–4px、去掉阴影与渐变 logo、行高 24px、4/8 间距基线；④ 图标改为内联 SVG 线条（实现时统一换本地打包 Codicon：<code>edit / trash / add / replace / remove / warning / go-to-file / eye / folder / file</code>）；⑤ 三态勾选走 <code>--vscode-checkbox-*</code> 变量；⑥ 语法点缀色用官方 <code>--vscode-charts-*</code>；⑦ 全部可交互元素 <code>:focus-visible</code> 焦点环 + aria-label，过渡 140ms 且尊重 <code>prefers-reduced-motion</code>；⑧ 底部为四态规范演示条（加载骨架 / 空态 / 错误态 / 禁用态），实现时每个区块都要齐备。键盘：<code>↑↓</code> 移动 · <code>Space</code> 勾选 · <code>Enter</code> 预览 · <code>Ctrl+F</code> 过滤 · <code>Ctrl+Enter</code> 应用。
+</p>
+
+<script>
+  // —— 以下均为原型演示脚本（真实扩展中由 webview 主程序接管） ——
+  (function () {
+    // 主题切换演示
+    var btns = document.querySelectorAll('.theme-demo button');
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () {
+        document.body.className = b.dataset.theme;
+        btns.forEach(function (x) {
+          x.classList.toggle('on', x === b);
+          x.setAttribute('aria-pressed', x === b ? 'true' : 'false');
+        });
+      });
+    });
+
+    // 引擎 Tab 切换
+    var tabs = document.querySelectorAll('.engine-tab');
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () {
+        tabs.forEach(function (x) {
+          var on = x === t;
+          x.setAttribute('aria-selected', on ? 'true' : 'false');
+          var seg = document.querySelector('.' + x.dataset.seg);
+          if (seg) seg.hidden = !on;
+        });
+      });
+    });
+
+    // 结果树选中态切换（演示）
+    document.querySelectorAll('.tree-row').forEach(function (r) {
+      r.addEventListener('click', function () {
+        document.querySelectorAll('.tree-row.selected').forEach(function (x) { x.classList.remove('selected'); });
+        r.classList.add('selected');
+      });
+    });
+
+    // 三态勾选演示：空 ⇄ 全选（mixed 态点击视为全选）
+    document.querySelectorAll('.tri').forEach(function (c) {
+      c.addEventListener('click', function () {
+        var v = c.getAttribute('aria-checked');
+        c.setAttribute('aria-checked', v === 'true' ? 'false' : 'true');
+        c.classList.toggle('checked', v !== 'true');
+        c.classList.remove('some');
+      });
+      c.addEventListener('keydown', function (e) {
+        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); c.click(); }
+      });
+    });
+  })();
+</script>
+</body>
+</html>

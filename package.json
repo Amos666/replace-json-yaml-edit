@@ -1,0 +1,104 @@
+{
+  "name": "replace-json-yaml-edit",
+  "displayName": "Batch Replace for JSON & YAML",
+  "description": "Batch replace values across JSON, YAML and any text files by path or regex - preview every diff in a visual panel, apply to hundreds of files with one undo.",
+  "version": "0.1.0",
+  "publisher": "your-publisher",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "batch replace",
+    "bulk replace",
+    "replace in files",
+    "replace across files",
+    "multiple files",
+    "multi-file",
+    "batch edit",
+    "replace all",
+    "json",
+    "jsonc",
+    "yaml",
+    "yml",
+    "structured edit",
+    "structured replace",
+    "jsonpath",
+    "key value",
+    "sed",
+    "regex",
+    "find and replace",
+    "diff",
+    "preview",
+    "workspace",
+    "config",
+    "批量替换",
+    "批量修改",
+    "多文件替换"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:structedit.openPanel",
+    "onCommand:structedit.useCursorPath",
+    "onCommand:structedit.useSelectionAsPattern",
+    "onCommand:structedit.applyFile",
+    "onCommand:structedit.showReport",
+    "onCommand:structedit.selectAllMatches",
+    "onCommand:structedit.sequentialReview"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "structedit.openPanel",
+        "title": "Batch Replace for JSON & YAML: Open Batch Edit Panel"
+      },
+      {
+        "command": "structedit.useCursorPath",
+        "title": "Batch Replace for JSON & YAML: Use Cursor Path"
+      },
+      {
+        "command": "structedit.useSelectionAsPattern",
+        "title": "Batch Replace for JSON & YAML: Use Selection as Pattern"
+      },
+      {
+        "command": "structedit.applyFile",
+        "title": "Batch Replace for JSON & YAML: Apply Expression Set File"
+      },
+      {
+        "command": "structedit.showReport",
+        "title": "Batch Replace for JSON & YAML: Show Last Report"
+      },
+      {
+        "command": "structedit.selectAllMatches",
+        "title": "Batch Replace for JSON & YAML: Select All Filter Matches"
+      },
+      {
+        "command": "structedit.sequentialReview",
+        "title": "Batch Replace for JSON & YAML: Review Matches One by One"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "compile": "tsc --noEmit",
+    "test": "node --test test/**/*.test.ts",
+    "package": "vsce package --no-dependencies --allow-missing-repository"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3"
+  }
+}

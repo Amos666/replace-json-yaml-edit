@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+.git/**
+.github/**
+src/**
+test/**
+node_modules/**
+**/*.map
+*.vsix
+.gitignore
+.gitattributes
+tsconfig.json
+esbuild.mjs
+structured-batch-edit-spec.md
+ui-mockup.html
