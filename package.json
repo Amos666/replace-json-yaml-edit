@@ -83,7 +83,50 @@
         "command": "structedit.sequentialReview",
         "title": "Batch Replace for JSON & YAML: Review Matches One by One"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "structedit.openPanel",
+          "group": "batchReplace@1"
+        },
+        {
+          "command": "structedit.useCursorPath",
+          "group": "batchReplace@2"
+        },
+        {
+          "command": "structedit.useSelectionAsPattern",
+          "group": "batchReplace@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "structedit.openPanel",
+        "key": "ctrl+alt+b"
+      }
+    ],
+    "configuration": {
+      "title": "Batch Replace for JSON & YAML",
+      "properties": {
+        "batchReplace.maxMatchesPerFile": {
+          "type": "number",
+          "default": 2000,
+          "description": "Maximum number of matches produced by a single instruction in one file. Excess matches are truncated with a warning."
+        },
+        "batchReplace.maxFileSizeMB": {
+          "type": "number",
+          "default": 5,
+          "description": "Files larger than this are skipped by the text engine."
+        },
+        "batchReplace.defaultExclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/out/**"],
+          "description": "Glob patterns excluded from the workspace file scan."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
@@ -100,6 +143,7 @@
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/codicons": "^0.0.46-24",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.25.0",

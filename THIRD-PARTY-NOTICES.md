@@ -1,9 +1,13 @@
 # Third-Party Notices
 
-This extension bundles the following third-party packages into `dist/extension.js`.
-Both are pure JavaScript with zero runtime dependencies and no native modules.
-The build (`esbuild --legal-comments=linked`) additionally extracts their
-in-source legal comments to `dist/extension.js.LEGAL.txt`.
+This extension bundles the following third-party packages into `dist/extension.js`
+and ships the Codicon font/CSS in `dist/ui/`. All are pure JavaScript / static
+assets with zero runtime dependencies and no native modules. The build
+(`esbuild --legal-comments=linked`) additionally extracts in-source legal
+comments to `dist/extension.js.LEGAL.txt`.
+
+Full license texts that are too long to inline are shipped alongside this file
+under `licenses/` and are included in the `.vsix`.
 
 ## jsonc-parser 3.3.1 — MIT
 
@@ -54,3 +58,19 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ```
+
+## @vscode/codicons — CC BY 4.0 (icons) / MIT (code)
+
+The Codicon icon font (`dist/ui/codicon.ttf`) and its CSS
+(`dist/ui/codicon.css`) are derived from Microsoft's
+**@vscode/codicons** project (Copyright Microsoft Corporation).
+
+- **Icons / font / CSS: Creative Commons Attribution 4.0 International (CC BY 4.0).**
+  Full license text: `licenses/codicons-LICENSE.txt` (shipped in the `.vsix`).
+  Attribution: Codicon icons by Microsoft Corporation, used under CC BY 4.0;
+  this notice and the shipped license text constitute the required attribution.
+- **Build scripts / source code: MIT.** Full license text:
+  `licenses/codicons-LICENSE-CODE.txt` (shipped in the `.vsix`).
+
+`@vscode/codicons` is a devDependency used only at build time to copy the font
+and CSS into `dist/ui/`; no runtime dependency on the package remains.

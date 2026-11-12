@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{CSP_SOURCE}} 'unsafe-inline'; font-src {{CSP_SOURCE}}; img-src {{CSP_SOURCE}} data:; script-src 'nonce-{{NONCE}}'">
+<title>{{TITLE}}</title>
+<link rel="stylesheet" href="{{CODICON_CSS_URI}}">
+<link rel="stylesheet" href="{{CSS_URI}}">
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ── Toolbar ───────────────────────────────────────────── -->
+  <header class="toolbar" role="banner">
+    <div class="tb-title">
+      <span class="codicon codicon-edit" aria-hidden="true"></span>
+      <span id="app-title">{{TITLE}}</span>
+    </div>
+    <div class="tb-actions" role="toolbar" aria-label="面板操作">
+      <button type="button" class="btn btn-sec" data-action="import" aria-label="导入表达式集" title="导入表达式集">
+        <span class="codicon codicon-cloud-download" aria-hidden="true"></span><span class="btn-label">导入</span>
+      </button>
+      <button type="button" class="btn btn-sec" data-action="export" aria-label="导出表达式集" title="导出表达式集">
+        <span class="codicon codicon-cloud-upload" aria-hidden="true"></span><span class="btn-label">导出</span>
+      </button>
+      <button type="button" class="btn btn-sec" data-action="history" aria-label="查看历史报告" title="查看历史报告">
+        <span class="codicon codicon-history" aria-hidden="true"></span><span class="btn-label">历史</span>
+      </button>
+      <button type="button" class="btn btn-sec" data-action="help" aria-label="帮助" title="帮助">
+        <span class="codicon codicon-question" aria-hidden="true"></span><span class="btn-label">帮助</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Overview (always visible) ─────────────────────────── -->
+  <section class="overview" id="overview" aria-label="全局概览">
+    <div class="ov-stats" id="ov-stats" role="group" aria-label="统计计数">
+      <div class="skel-line" style="width:64px"></div>
+      <div class="skel-line" style="width:52px"></div>
+      <div class="skel-line" style="width:52px"></div>
+      <div class="skel-line" style="width:64px"></div>
+      <div class="skel-line" style="width:52px"></div>
+    </div>
+    <div class="ov-scan" id="ov-scan">
+      <div class="skel-line" style="width:120px"></div>
+    </div>
+  </section>
+
+  <!-- ── Global error strip ────────────────────────────────── -->
+  <div class="error-strip" id="error-strip" role="alert" hidden></div>
+
+  <!-- ── Content: three sections ───────────────────────────── -->
+  <main class="content" id="content">
+
+    <!-- 区块① 指令 -->
+    <section class="section" id="sec-instructions" aria-labelledby="h-instructions">
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-instructions">指令</h2>
+        <div class="sec-head-actions">
+          <div class="tabs" role="tablist" aria-label="引擎" id="engine-tabs">
+            <button type="button" class="tab" role="tab" data-action="engine-tab" data-engine="structured" aria-selected="true" id="tab-structured">结构化</button>
+            <button type="button" class="tab" role="tab" data-action="engine-tab" data-engine="text" aria-selected="false" id="tab-text">文本 sed</button>
+          </div>
+        </div>
+      </div>
+      <div class="sec-body" id="ins-body" aria-disabled="false">
+        <div class="state-skeleton" aria-hidden="true">
+          <div class="skel-line" style="width:92%"></div>
+          <div class="skel-line" style="width:86%"></div>
+          <div class="skel-line" style="width:90%"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 区块② 文件范围 -->
+    <section class="section" id="sec-scope" aria-labelledby="h-scope">
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-scope">文件范围</h2>
+        <div class="sec-head-actions" id="scope-head-actions"></div>
+      </div>
+      <div class="sec-body" id="scope-body" aria-disabled="false">
+        <div class="state-skeleton" aria-hidden="true">
+          <div class="skel-line" style="width:70%"></div>
+          <div class="skel-line" style="width:96%"></div>
+          <div class="skel-line" style="width:88%"></div>
+          <div class="skel-line" style="width:94%"></div>
+          <div class="skel-line" style="width:80%"></div>
+        </div>
+      </div>
+      <div class="review-card" id="review-card" hidden></div>
+    </section>
+
+    <!-- 区块③ 结果 -->
+    <section class="section" id="sec-results" aria-labelledby="h-results">
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-results">结果</h2>
+        <div class="sec-head-actions" id="results-head-actions"></div>
+      </div>
+      <div class="sec-body" id="results-body" aria-disabled="false">
+        <div class="state-skeleton" aria-hidden="true">
+          <div class="skel-line" style="width:80%"></div>
+          <div class="skel-line" style="width:96%"></div>
+          <div class="skel-line" style="width:90%"></div>
+          <div class="skel-line" style="width:84%"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── Sticky bottom bar ─────────────────────────────────── -->
+  <footer class="bottombar" id="bottombar"></footer>
+
+  <!-- ── Confirmation dialog ───────────────────────────────── -->
+  <div class="modal-backdrop" id="confirm-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+      <h3 class="modal-title" id="confirm-title"></h3>
+      <div class="modal-body" id="confirm-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-sec" data-action="confirm-cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="confirm-ok" id="confirm-ok">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sr-only" id="live" aria-live="polite" aria-atomic="true"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+<script nonce="{{NONCE}}" src="{{JS_URI}}"></script>
+</body>
+</html>
