@@ -106,6 +106,15 @@ export async function readText(
     text = open.getText(); // 含未保存内容
     byteLen = new TextEncoder().encode(text).length;
   } else {
+    // 读前先 stat：大文件直接跳过，避免 readFile 卡死在 GB 级文件上（§5.3）
+    try {
+      const st = await vscode.workspace.fs.stat(uri);
+      if (st.size > maxBytes) {
+        return { text: '', hash: '', skip: '文件超过大小上限，已跳过' };
+      }
+    } catch {
+      // stat 失败不跳过，交给 readFile 的错误处理
+    }
     let bytes: Uint8Array;
     try {
       bytes = await vscode.workspace.fs.readFile(uri);
