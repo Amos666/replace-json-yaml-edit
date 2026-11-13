@@ -80,6 +80,7 @@
     focusPath: null,
     step: 1,                          // 三步向导：① 选择文件 ② 编辑值 ③ 预览并应用（不持久化）
     previewUri: '',                   // 双击预览弹框当前文件
+    scopeRoot: null,                  // 扫描根目录（null = VS Code 打开的工作区；由宿主 init/state 下发）
   };
 
   const STEPS = [
@@ -163,6 +164,11 @@
     const inc = fs.include || [], exc = fs.exclude || [];
     return '自定义: ' + (inc.length ? inc.join(', ') : '（空=全部）') + (exc.length ? ' · 排除 ' + exc.join(', ') : '');
   }
+  /** 扫描根目录徽标：过长路径只保留末三段（完整路径在 title 里）。 */
+  function shortRoot(p) {
+    const parts = String(p).split('/').filter(Boolean);
+    return parts.length <= 3 ? String(p) : '…/' + parts.slice(-3).join('/');
+  }
   function ariaChecked(v) { return v === 'mixed' ? 'mixed' : (v ? 'true' : 'false'); }
 
   /* ── 发消息（严格按 protocol.ts） ───────────────────────── */
@@ -183,6 +189,16 @@
     });
     persist();
   }
+  /**
+   * 立即发送所有防抖中的输入（指令 / 筛选 / glob）。
+   * 在「扫描 / 换步 / 预览 / 应用」前调用，避免宿主拿上一版指令出结果
+   * （反馈 bug5：修改值后不起效，多因 300ms 防抖窗口内直接点了下一步/应用）。
+   */
+  function flushPending() {
+    if (timers.ins) { clearTimeout(timers.ins); timers.ins = undefined; post({ type: 'setInstructions', instructions: S.instructions }); }
+    if (timers.filter) { clearTimeout(timers.filter); timers.filter = undefined; post({ type: 'setFilter', raw: S.filter.raw, view: S.view }); }
+    if (timers.glob) { clearTimeout(timers.glob); timers.glob = undefined; post({ type: 'setGlob', include: S.selection.baseInclude.slice(), exclude: S.selection.baseExclude.slice() }); }
+  }
 
   /* ── 显示用筛选匹配（§6.3，非扫描结果） ────────────────── */
   function globToRegex(g) {
@@ -199,12 +215,21 @@
     const p = path.toLowerCase(), t = tok.toLowerCase();
     if (!t) return true;
     if (t.indexOf('ext:') === 0) {
-      const exts = t.slice(4).split(',').map(function (s) { return s.replace(/^\*?\.?/, ''); }).filter(Boolean);
+      const alias = { yaml: ['yaml', 'yml'], yml: ['yaml', 'yml'], json: ['json', 'jsonc'], jsonc: ['json', 'jsonc'] };
+      let exts = t.slice(4).split(',').map(function (s) { return s.replace(/^\*?\.?/, ''); }).filter(Boolean);
+      exts = exts.reduce(function (acc, e) { return acc.concat(alias[e] || [e]); }, []);
       const base = p.split('/').pop();
       const ext = base.indexOf('.') >= 0 ? base.split('.').pop() : '';
       return exts.some(function (e) { return e === '*' || ext === e || ('*.' + ext) === e; });
     }
-    if (t.indexOf('*') >= 0 || t.indexOf('?') >= 0 || t.indexOf('/') >= 0) return globToRegex(t).test(path);
+    if (t.indexOf('*') >= 0 || t.indexOf('?') >= 0 || t.indexOf('/') >= 0) {
+      // 与宿主 matchTreeFilter 对齐：原样 / 同义扩展名 / `**/` 任意深度 / 仅文件名 都要认。
+      const name = p.split('/').pop();
+      const cands = [t, '**/' + t];
+      if (t === '*.yaml' || t === '*.yml') cands.push('*.yaml', '*.yml', '**/*.yaml', '**/*.yml');
+      else if (t === '*.json' || t === '*.jsonc') cands.push('*.json', '*.jsonc', '**/*.json', '**/*.jsonc');
+      return cands.some(function (g) { return globToRegex(g).test(p) || globToRegex(g).test(name); });
+    }
     return p.indexOf(t) >= 0;
   }
   function parseFilter(raw) {
@@ -582,12 +607,17 @@
     }
   }
   function chipsHtml() {
-    const chips = ['*.yaml', '*.json', '*.env', '*.py', '*.md'];
+    const chips = ['*.yaml', '*.yml', '*.json', '*.env', '*.py', '*.md'];
     const tf = S.targetFormat;
+    // 快捷片是「大概范围」：与当前目标格式固定扩展名同义的才算兼容（*.yaml ↔ *.yml）。
+    const compatible = tf === 'json' ? ['*.json']
+      : tf === 'yaml' ? ['*.yaml', '*.yml']
+        : chips;
     return chips.map(function (c) {
-      let disabled = false, why = '';
-      if (tf === 'json' && c !== '*.json') { disabled = true; why = '当前目标格式 JSON 固定为 *.json / *.jsonc，与 ' + c + ' 不兼容'; }
-      if (tf === 'yaml' && c !== '*.yaml') { disabled = true; why = '当前目标格式 YAML 固定为 *.yaml / *.yml，与 ' + c + ' 不兼容'; }
+      const disabled = compatible.indexOf(c) < 0;
+      const why = disabled
+        ? ('当前目标格式 ' + (tf === 'json' ? 'JSON 固定为 *.json / *.jsonc' : 'YAML 固定为 *.yaml / *.yml') + '，与 ' + c + ' 不兼容')
+        : '';
       return '<button type="button" class="chip" data-action="chip" data-value="' + esc(c) + '"' +
         (disabled ? ' aria-disabled="true"' : '') + ' title="' + esc(why || ('点击填入筛选条件 ' + c)) + '">' + esc(c) + '</button>';
     }).join('');
@@ -642,7 +672,7 @@
   function isExpanded(path, level) {
     if (Object.prototype.hasOwnProperty.call(S.expanded, path)) return S.expanded[path];
     if ((S.filter.raw || '').trim()) return true;     // 过滤态展开含命中的目录
-    return level === 0;                              // 默认展开顶层
+    return true;                                      // 默认全部展开：否则两层以内的文件永远看不到（bug3）
   }
   const MAX_ROWS = 1500;
   function buildDirStats(vis) {
@@ -813,13 +843,25 @@
       '<div class="filter-echo" id="filter-echo">' + filterEchoHtml() + '</div>' +
       '<div class="filter-chips" role="group" aria-label="筛选快捷片">' + chipsHtml() + '</div>';
 
+    // 选择目录（bug1）：默认 VS Code 打开的工作区根目录，可弹窗改到任意目录（含工作区之外）。
+    const rootRow = '<div class="filter-row scope-root-row">' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="pick-directory" title="弹出目录选择框，以该目录为扫描根（可选择工作区之外的目录）">' +
+      ic('folder-opened') + ' 选择目录…</button>' +
+      (S.scopeRoot
+        ? '<span class="scope-root-badge" title="' + esc(S.scopeRoot) + '">' + ic('folder') + ' ' + esc(shortRoot(S.scopeRoot)) + '</span>' +
+          '<button type="button" class="btn btn-sec btn-sm" data-action="reset-scope-root" title="' + esc(S.scopeRoot) + '">' +
+          ic('discard') + ' 恢复工作区根目录</button>'
+        : '<span class="sec-note">' + ic('root-folder') + ' 扫描根目录：VS Code 打开的工作区</span>') +
+      '</div>';
+
     const grid = '<div class="scope-grid">' +
       '<div class="scope-left"><div class="tree-toolbar">' + treeToolbarHtml() + '</div>' +
       '<div class="tree" id="scope-tree" role="tree" aria-label="文件范围列表">' + treeOrFlatHtml() + '</div></div>' +
       '<div class="scope-right">' + globPanelHtml() + '</div></div>';
 
     const errHtml = S.errors.length ? errBox(S.errors[S.errors.length - 1].message) : '';
-    body.innerHTML = fmtRow + (structured ? policyStructuredHtml(tf) : policyTextHtml()) + errHtml + filterRow + batchbarHtml() + grid;
+    body.innerHTML = fmtRow + (structured ? policyStructuredHtml(tf) : policyTextHtml()) +
+      errHtml + rootRow + filterRow + batchbarHtml() + grid;
 
     const v = validateGlob(S.filter.raw);
     const fi = el('filter-input');
@@ -1060,7 +1102,7 @@
     const h = el('wiz-hint');
     if (h) {
       const hints = [
-        '第 ① 步：设定目录 / 过滤条件，点「扫描文件」载入列表，再勾选要修改的文件。页面初始不扫描任何文件。',
+        '第 ① 步：默认以 VS Code 打开的工作区为根目录，可点「选择目录…」改到任意目录（含工作区之外）；设定过滤条件后点「扫描文件」载入列表，再勾选要修改的文件。页面初始不扫描任何文件。',
         '第 ② 步：新增 / 修改 / 删除要写入的值（结构化 set / delete / insert 或文本 sed 替换）。双击文件行可预览源文件格式。',
         '第 ③ 步：核对 diff 预览，点「应用」一次提交；一次 Ctrl+Z 可整体撤销。',
       ];
@@ -1209,6 +1251,7 @@
     bumpFlatVersion();
     S.counts = p.counts || zeroCounts();
     S.phase = p.phase || 'input';
+    S.scopeRoot = ('scopeRoot' in p) ? (p.scopeRoot || null) : null;
     S.customSelection = (S.selection.overrides.add.length + S.selection.overrides.remove.length) > 0;
     S.globMode = S.customSelection ? 'summary' : 'edit';
     if (!S.activeInstructionId || !S.instructions.some(function (i) { return i.id === S.activeInstructionId; })) {
@@ -1232,6 +1275,11 @@
   function onState(p) {
     S.phase = p.phase || S.phase;
     if (p.counts) S.counts = p.counts;
+    // 扫描根目录变化（选目录 / 恢复工作区根）→ 重渲染第 ① 步的根目录行
+    if ('scopeRoot' in p) {
+      const next = p.scopeRoot || null;
+      if (next !== S.scopeRoot) { S.scopeRoot = next; renderScopePreserve(); }
+    }
     if (p.message) toast(p.message);
     renderOverview(); renderBottomBar(); renderWizard(); applyDisabled();
   }
@@ -1291,11 +1339,12 @@
   }
   function hideConfirm() { el('confirm-modal').hidden = true; confirmCallback = null; }
   function requestApply() {
+    flushPending(); // 先把未落定的编辑交给宿主，再取当前范围/补丁
     const uris = selectedUris();
     if (!uris.length) { toast('请先选择文件范围'); return; }
     const hasDel = S.instructions.some(function (i) { return i.enabled && (i.kind === 'delete' || i.textOp === 'deleteLine'); });
     const n = S.counts.changes || 0;
-    const doApply = function () { post({ type: 'apply', uris: uris, confirmed: true }); };
+    const doApply = function () { flushPending(); post({ type: 'apply', uris: uris, confirmed: true }); };
     if (hasDel && n > 20) {
       if (n > 500) {
         const detail = S.flat.filter(function (f) { return f.checked === true; }).slice(0, 40).map(function (f) {
@@ -1360,12 +1409,15 @@
     switch (a) {
       case 'wizard-step': {
         const st = parseInt(t.getAttribute('data-step'), 10);
+        flushPending(); // 换步前先把未落定的编辑发给宿主，避免下一步拿到过期结果
         S.step = (st >= 1 && st <= 3) ? st : 1;
         renderWizard(); applyStep(); renderBottomBar(); applyDisabled();
         announce('已进入第 ' + S.step + ' 步：' + STEPS[S.step - 1].label);
         break;
       }
-      case 'scan-files': post({ type: 'scan' }); toast('已发出扫描请求，正在按当前范围载入文件列表'); break;
+      case 'scan-files': flushPending(); post({ type: 'scan' }); toast('已发出扫描请求，正在按当前范围载入文件列表'); break;
+      case 'pick-directory': post({ type: 'pickDirectory' }); break;
+      case 'reset-scope-root': post({ type: 'resetScopeRoot' }); break;
       case 'preview-close': hidePreview(); break;
       case 'preview-open-editor': if (S.previewUri) post({ type: 'openFile', uri: S.previewUri }); break;
 
@@ -1504,9 +1556,9 @@
       case 'review-start': post({ type: 'review', action: 'start' }); break;
       case 'review': reviewAction(t.getAttribute('data-ra')); break;
 
-      case 'scan': post({ type: 'scan' }); toast('已发出重新扫描请求'); break;
+      case 'scan': flushPending(); post({ type: 'scan' }); toast('已发出重新扫描请求'); break;
       case 'cancel-scan': post({ type: 'cancelScan' }); break;
-      case 'preview-all': post({ type: 'previewAll' }); break;
+      case 'preview-all': flushPending(); post({ type: 'previewAll' }); break;
       case 'apply': requestApply(); break;
       case 'diff-mode': S.diffTextMode = !S.diffTextMode; renderResults(); break;
       case 'jump': {
@@ -1522,7 +1574,7 @@
       }
       case 'confirm-cancel': hideConfirm(); break;
       case 'confirm-ok': { const cb = confirmCallback; hideConfirm(); if (cb) cb(); break; }
-      case 'retry-scan': post({ type: 'scan' }); break;
+      case 'retry-scan': flushPending(); post({ type: 'scan' }); break;
       case 'dismiss-error':
         S.errors = []; renderErrorStrip(); renderInstructions(); renderScopePreserve(); renderResults(); break;
       case 'export-report': post({ type: 'exportReport' }); break;

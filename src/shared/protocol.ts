@@ -134,6 +134,8 @@ export interface InitPayload {
   flat: FlatItem[];
   counts: Counts;
   phase: Phase;
+  /** 扫描根目录（null/缺省 = VS Code 打开的工作区；绝对路径 = 用户选的其它目录）。 */
+  scopeRoot?: string | null;
 }
 
 export interface TreePayload {
@@ -147,7 +149,7 @@ export interface TreePayload {
 export type HostToWebview =
   | { type: 'init'; payload: InitPayload }
   | { type: 'tree'; payload: TreePayload }
-  | { type: 'state'; payload: { phase: Phase; counts: Counts; message?: string } }
+  | { type: 'state'; payload: { phase: Phase; counts: Counts; message?: string; scopeRoot?: string | null } }
   | { type: 'preview'; payload: { diffs: FileDiff[] } }
   | { type: 'review'; payload: ReviewPayload }
   | { type: 'report'; payload: ReportPayload }
@@ -184,6 +186,10 @@ export type WebviewToHost =
   | { type: 'review'; action: ReviewAction; uri?: string }
   | { type: 'setGlob'; include: string[]; exclude: string[] }
   | { type: 'resetToGlob' }
+  /** 弹出目录选择框（showOpenDialog），选定后宿主以该目录为扫描根重新扫描。 */
+  | { type: 'pickDirectory' }
+  /** 放弃自选目录，恢复以 VS Code 打开的工作区根目录为扫描根。 */
+  | { type: 'resetScopeRoot' }
   | { type: 'scan' }
   | { type: 'cancelScan' }
   | { type: 'previewAll' }

@@ -479,6 +479,17 @@ input.tag-new { flex: 1 1 70px; min-width: 70px; min-height: 18px; border: none;
 .tag-input:focus-within { border-color: var(--c-focus); }
 
 .filter-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+/* 选择目录行（bug1）：默认工作区根目录 + 目录选择弹窗入口 */
+.scope-root-row { margin-top: var(--sp-1); }
+.scope-root-row .sec-note { display: inline-flex; align-items: center; gap: 4px; }
+.scope-root-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  max-width: 60%; min-height: var(--ctl-h); padding: 0 6px;
+  border: 1px solid var(--c-wborder); border-radius: var(--radius);
+  background: var(--c-bg-2); color: var(--c-fg);
+  font-family: var(--font-code); font-size: 0.85em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .filter-input-wrap { position: relative; flex: 1 1 200px; display: flex; align-items: center; }
 .filter-input-wrap > .codicon { position: absolute; left: 6px; color: var(--c-muted); font-size: 13px; pointer-events: none; }
 input.filter-input { width: 100%; padding-left: 24px; }
@@ -512,8 +523,8 @@ input.filter-input { width: 100%; padding-left: 24px; }
 .tree-toolbar { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
 .tree-toolbar .spacer { flex: 1; }
 
-/* 树 / 扁平列表 */
-.tree { border: 1px solid var(--c-wborder); border-radius: var(--radius); background: var(--c-bg); max-height: 260px; overflow: auto; }
+/* 树 / 扁平列表：占用筛选框下方的可用空间（0.1.3 反馈：下面有空间却显示不出数据） */
+.tree { border: 1px solid var(--c-wborder); border-radius: var(--radius); background: var(--c-bg); min-height: 160px; max-height: 400px; overflow: auto; }
 .tree-row {
   display: flex; align-items: center; gap: 5px;
   min-height: var(--row-h); padding: 0 6px;

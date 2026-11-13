@@ -44,7 +44,10 @@ export async function refreshFileList(
 ): Promise<void> {
   // 用户设定的目录/glob 优先（第①步「先选文件」），其次按启用指令的 fileScope 收窄。
   // 两者都只是「拉哪些文件进树」的优化；真正的作用范围仍由 runScan 的 matchScope 逐文件裁决。
-  const userInclude = (state.selection.baseInclude ?? []).filter((g) => g && g !== '**/*');
+  const userInclude = (state.selection.baseInclude ?? [])
+    .filter((g) => g && g !== '**/*')
+    .map(normalizeIncludeGlob)
+    .filter(Boolean);
   const scopeGlob = searchIncludeGlob(state.instructions);
   let include = '**/*';
   if (userInclude.length) {
@@ -54,7 +57,14 @@ export async function refreshFileList(
   }
   const excludeGlobs = [...cfg.defaultExclude, ...(state.selection.baseExclude ?? [])];
   const exclude = excludeGlobs.length ? `{${excludeGlobs.join(',')}}` : undefined;
-  const uris = await vscode.workspace.findFiles(include, exclude, cfg.maxFiles, token);
+
+  // 用户选了别的目录（可在工作区之外）→ RelativePattern 以该目录为根；
+  // 否则默认以 VS Code 打开的工作区根目录扫描。
+  const uris = state.scopeRoot
+    ? await vscode.workspace.findFiles(
+      new vscode.RelativePattern(state.scopeRoot, include), exclude, cfg.maxFiles, token,
+    )
+    : await vscode.workspace.findFiles(include, exclude, cfg.maxFiles, token);
   state.listTruncated = uris.length >= cfg.maxFiles;
   const folders = vscode.workspace.workspaceFolders ?? [];
 
@@ -62,10 +72,13 @@ export async function refreshFileList(
   const uriToRel = new Map<string, string>();
   const relToUri = new Map<string, string>();
   for (const uri of uris) {
-    const folder = vscode.workspace.getWorkspaceFolder(uri);
-    if (!folder) continue; // §6.6 / §9：工作区外文件不跟随
-    const rel = path.relative(folder.uri.fsPath, uri.fsPath).split(path.sep).join('/');
-    const relPath = folders.length > 1 ? `${folder.name}/${rel}` : rel;
+    // 扫描根优先（scopeRoot 可在工作区之外），其次回落到所属工作区文件夹。
+    const scoped = isUnderRoot(uri.fsPath, state.scopeRoot);
+    const folder = scoped ? undefined : vscode.workspace.getWorkspaceFolder(uri);
+    if (!scoped && !folder) continue; // §6.6 / §9：既不在扫描根也不在工作区的文件不跟随
+    const baseFs = scoped ? state.scopeRoot! : folder!.uri.fsPath;
+    const rel = path.relative(baseFs, uri.fsPath).split(path.sep).join('/');
+    const relPath = !scoped && folders.length > 1 ? `${folder!.name}/${rel}` : rel;
     const name = relPath.split('/').pop() ?? relPath;
     const uriStr = uri.toString();
     entries.push({ uri: uriStr, relPath, name, ext: extOf(name) });
@@ -79,16 +92,38 @@ export async function refreshFileList(
   state.relToUri = relToUri;
 }
 
+/** 是否位于扫描根（绝对路径前缀判断；root 为空即 false）。 */
+function isUnderRoot(fsPath: string, root?: string | null): boolean {
+  if (!root) return false;
+  return fsPath === root || fsPath.startsWith(root + path.sep);
+}
+
+/**
+ * 用户输入的 include glob 归一化：
+ * - `*.yml` / `*.env` 这类不含路径分隔符的模式补「任意深度」前缀，否则 findFiles
+ *   只能命中根目录一层（0.1.x 反馈：「选 yml 不识别扫描」的常见根因）；
+ * - 含 `/` 的模式按扫描根相对路径原样使用（`aaa/bbbb/xs*.yml`）。
+ */
+export function normalizeIncludeGlob(g: string): string {
+  const t = (g ?? '').trim();
+  if (!t) return '';
+  if (t.startsWith('**/') || t.startsWith('/') || t.startsWith('./')) return t;
+  if (t.includes('/')) return t;
+  return `**/${t}`;
+}
+
 /** §6.6 hash：扫描时记录内容 hash，apply 前重读比对。 */
 export function hashText(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-/** 符号链接 / 工作区外：best-effort realpath 不跟随出界（远程/虚拟工作区退化为不疑罪）。 */
-async function insideWorkspace(uri: vscode.Uri, folder: vscode.WorkspaceFolder): Promise<boolean> {
+/**
+ * 符号链接 / 扫描根外：best-effort realpath 不跟随出界（远程/虚拟工作区退化为不疑罪）。
+ */
+async function insideRoot(uri: vscode.Uri, rootFsPath: string): Promise<boolean> {
   try {
     const real = await realpath(uri.fsPath);
-    const root = await realpath(folder.uri.fsPath);
+    const root = await realpath(rootFsPath);
     return real === root || real.startsWith(root + path.sep);
   } catch {
     return true;
@@ -98,16 +133,20 @@ async function insideWorkspace(uri: vscode.Uri, folder: vscode.WorkspaceFolder):
 /**
  * §6.6 读取一致性：已打开用 openTextDocument().getText()（含未保存），
  * 否则 workspace.fs.readFile + fatal UTF-8。§5.3 安全跳过：8KB NUL / 非 UTF-8 / 超限大小。
+ * scopeRoot：用户自选的扫描根（可在工作区之外），在其下的文件允许读写。
  */
 export async function readText(
   uriStr: string,
   cfg: HostConfig,
+  scopeRoot?: string | null,
 ): Promise<{ text: string; hash: string; skip?: string }> {
   const uri = vscode.Uri.parse(uriStr);
-  const folder = vscode.workspace.getWorkspaceFolder(uri);
-  if (!folder) return { text: '', hash: '', skip: '工作区外文件已忽略' };
-  if (!(await insideWorkspace(uri, folder))) {
-    return { text: '', hash: '', skip: '符号链接指向工作区外，已跳过' };
+  const scoped = isUnderRoot(uri.fsPath, scopeRoot);
+  const folder = scoped ? undefined : vscode.workspace.getWorkspaceFolder(uri);
+  if (!scoped && !folder) return { text: '', hash: '', skip: '工作区外文件已忽略' };
+  const rootFsPath = scoped ? scopeRoot! : folder!.uri.fsPath;
+  if (!(await insideRoot(uri, rootFsPath))) {
+    return { text: '', hash: '', skip: '符号链接指向扫描根之外，已跳过' };
   }
   const maxBytes = Math.max(1, cfg.maxFileSizeMB) * 1024 * 1024;
   const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uriStr);
@@ -414,7 +453,7 @@ export async function runScan(
       scanned += 1;
       let cached = cache.get(entry.uri);
       if (!cached) {
-        const r = await readText(entry.uri, cfg);
+        const r = await readText(entry.uri, cfg, state.scopeRoot);
         if (r.skip) {
           rec.skippedReason = r.skip;
           skipped.push({ uri: entry.uri, reason: r.skip });

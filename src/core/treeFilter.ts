@@ -13,14 +13,45 @@ export function parseTreeFilter(raw: string, view: 'tree' | 'flat' = 'tree'): Tr
   return { raw, include, exclude, view };
 }
 
+/**
+ * 同义扩展名（筛选是「大概范围」，不应因 .yaml/.yml、.json/.jsonc 之差漏文件）。
+ * 反馈 bug2：选 YAML 格式后 .yml 文件用 `*.yaml` 筛不出来。
+ */
+const EXT_ALIAS: Record<string, string[]> = {
+  yaml: ['yaml', 'yml'],
+  yml: ['yaml', 'yml'],
+  json: ['json', 'jsonc'],
+  jsonc: ['json', 'jsonc'],
+};
+
+/** glob 条件的候选写法：原样 + 同义扩展名 + 任意深度前缀 + 仅文件名匹配。 */
+function globCandidates(condition: string): string[] {
+  const out = new Set<string>([condition]);
+  const alias = EXT_ALIAS[condition];
+  if (alias) for (const a of alias) out.add(`*.${a}`);
+  // `*.yml` ↔ `*.yaml` 这类带前缀的写法也要互认
+  for (const key of Object.keys(EXT_ALIAS)) {
+    if (condition === `*.${key}`) for (const a of EXT_ALIAS[key]) out.add(`*.${a}`);
+  }
+  const withDepth = [...out].map((g) => `**/${g}`);
+  return [...out, ...withDepth];
+}
+
 function matchesCondition(relPath: string, name: string, condition: string): boolean {
   const c = condition.toLowerCase();
   if (c.startsWith('ext:')) {
-    const exts = c.slice(4).split(',').map(s => s.trim()).filter(Boolean);
-    return exts.includes(extOf(name));
+    const raw = c.slice(4).split(',').map(s => s.trim()).filter(Boolean);
+    const exts = new Set<string>();
+    for (const e of raw) {
+      exts.add(e.replace(/^\*?\.?/, ''));
+      for (const a of EXT_ALIAS[e.replace(/^\*?\.?/, '')] ?? []) exts.add(a);
+    }
+    return exts.has(extOf(name));
   }
   if (c.includes('*') || c.includes('?') || c.includes('/')) {
-    return globMatch(relPath, c) || globMatch(name, c);
+    return globCandidates(c).some(
+      g => globMatch(relPath, g) || globMatch(name, g),
+    );
   }
   return relPath.includes(c);
 }

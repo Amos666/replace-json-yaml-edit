@@ -102,7 +102,12 @@ export class PanelController {
   private postState(phase: HostState['phase'], message?: string): void {
     this.post({
       type: 'state',
-      payload: { phase, counts: this.state.counts, ...(message ? { message } : {}) },
+      payload: {
+        phase,
+        counts: this.state.counts,
+        scopeRoot: this.state.scopeRoot,
+        ...(message ? { message } : {}),
+      },
     });
   }
 
@@ -213,6 +218,18 @@ export class PanelController {
       this.scanTimer = undefined;
       void this.recomputePlans();
     }, delay);
+  }
+
+  /**
+   * 有挂起的轻量重算时立刻执行（previewAll / apply 前调用）。
+   * UI 侧 setInstructions → 200ms 防抖窗口内若用户直接点预览/应用，
+   * 否则会用上一版指令的补丁出 diff、写文件（反馈「修改值后不起效」）。
+   */
+  private async flushRecompute(): Promise<void> {
+    if (!this.scanTimer) return;
+    clearTimeout(this.scanTimer);
+    this.scanTimer = undefined;
+    await this.recomputePlans();
   }
 
   private scheduleFilter(): void {
@@ -336,10 +353,17 @@ export class PanelController {
         case 'resetToGlob': this.onResetToGlob(); break;
         case 'scan': void this.doScan({ refreshFiles: true, clearCache: true, sendInit: false }); break;
         case 'cancelScan': this.cancelScan(); this.postState('input', '扫描已取消'); break;
+        case 'pickDirectory': await this.onPickDirectory(); break;
+        case 'resetScopeRoot': this.onResetScopeRoot(); break;
         case 'previewAll':
+          // 应用/预览前先把「未落定的指令编辑」立即重算，避免拿到过期 diff（0.1.3 反馈：改值后不起效）。
+          await this.flushRecompute();
           this.post({ type: 'preview', payload: { diffs: this.state.diffs } });
           break;
-        case 'apply': await this.onApply(msg.uris, msg.confirmed); break;
+        case 'apply':
+          await this.flushRecompute();
+          await this.onApply(msg.uris, msg.confirmed);
+          break;
         case 'openFile': await this.onOpenFile(msg.uri, msg.line); break;
         case 'previewFile': await this.onPreviewFile(msg.uri, msg.path); break;
         case 'importExpressionSet': await this.onImport(); break;
@@ -436,6 +460,36 @@ export class PanelController {
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
     this.scheduleRecompute();
     this.postState(this.state.phase, '已重置为 glob；点「扫描文件」可重新载入列表。');
+  }
+
+  /* ── 选择目录（bug1）：默认工作区根目录，可弹窗改到任意目录 ── */
+
+  /** 弹出目录选择框；选定后以该目录为扫描根立即重扫（可选工作区之外的目录）。 */
+  private async onPickDirectory(): Promise<void> {
+    const defaultPath = this.state.scopeRoot
+      ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: '选择扫描根目录',
+      ...(defaultPath ? { defaultPath } : {}),
+    });
+    const dir = picked?.[0]?.fsPath;
+    if (!dir) return; // 用户取消：范围保持不变
+    this.state.scopeRoot = dir;
+    this.textCache.clear();
+    await this.doScan({ refreshFiles: true, clearCache: true, sendInit: false });
+    this.postState(this.state.phase, `扫描根目录已切换为：${dir}`);
+  }
+
+  /** 恢复默认：以 VS Code 打开的工作区根目录扫描。 */
+  private onResetScopeRoot(): void {
+    if (!this.state.scopeRoot) return;
+    this.state.scopeRoot = null;
+    this.textCache.clear();
+    void this.doScan({ refreshFiles: true, clearCache: true, sendInit: false })
+      .then(() => this.postState(this.state.phase, '已恢复以工作区根目录扫描。'));
   }
 
   /* ── 逐个审阅 §6.4 ─────────────────────────────────────── */

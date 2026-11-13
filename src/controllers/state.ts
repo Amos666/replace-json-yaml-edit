@@ -38,6 +38,7 @@ export function createInitialState(): HostState {
     scanSkipped: [],
     scanConflicts: [],
     listTruncated: false,
+    scopeRoot: null,
   };
 }
 
@@ -126,6 +127,7 @@ export function toInitPayload(state: HostState): InitPayload {
     flat: state.flat,
     counts: state.counts,
     phase: state.phase,
+    scopeRoot: state.scopeRoot,
   };
 }
 

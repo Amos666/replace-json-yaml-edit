@@ -58,3 +58,33 @@ test('§6.3 过滤不改变已勾选态（纯函数：只求值，不写状态�
   matchTreeFilter('config/a.yaml', f);
   assert.deepEqual([...checked], ['config/a.yaml', 'config/b.json']);
 });
+
+test('0.1.3 bug2：*.yaml 与 *.yml 互认（同义扩展名）', () => {
+  const yaml = parseTreeFilter('*.yaml');
+  assert.equal(matchTreeFilter('config/app.yaml', yaml), true);
+  assert.equal(matchTreeFilter('aaa/bbbb/xs1.yml', yaml), true, '*.yaml 必须也能筛出 .yml');
+  assert.equal(matchTreeFilter('config/app.json', yaml), false);
+
+  const yml = parseTreeFilter('*.yml');
+  assert.equal(matchTreeFilter('config/app.yaml', yml), true, '*.yml 也要能筛出 .yaml');
+  assert.equal(matchTreeFilter('config/app.json', yml), false);
+
+  const json = parseTreeFilter('*.json');
+  assert.equal(matchTreeFilter('config/app.jsonc', json), true, '*.json 与 *.jsonc 互认');
+  assert.equal(matchTreeFilter('config/app.yaml', json), false);
+});
+
+test('0.1.3 bug4：路径 glob / 文件名 glob 都认，筛选只是范围', () => {
+  const pathGlob = parseTreeFilter('aaa/bbbb/xs*.yml');
+  assert.equal(matchTreeFilter('aaa/bbbb/xs1.yml', pathGlob), true);
+  assert.equal(matchTreeFilter('aaa/bbbb/xs2.yml', pathGlob), true);
+  assert.equal(matchTreeFilter('config/app.yaml', pathGlob), false);
+
+  const nameGlob = parseTreeFilter('xs*.yml');
+  assert.equal(matchTreeFilter('aaa/bbbb/xs1.yml', nameGlob), true, '不含路径的 glob 按任意深度文件名匹配');
+  assert.equal(matchTreeFilter('config/app.yaml', nameGlob), false);
+
+  const excl = parseTreeFilter('aaa/bbbb/xs*.yml !xs2.yml');
+  assert.equal(matchTreeFilter('aaa/bbbb/xs1.yml', excl), true);
+  assert.equal(matchTreeFilter('aaa/bbbb/xs2.yml', excl), false);
+});

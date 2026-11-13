@@ -85,6 +85,11 @@ export interface HostState {
   scanConflicts: ConflictItem[];
   /** findFiles 达到上限，文件列表可能被截断（仅用于宿主提示，不进入协议）。 */
   listTruncated: boolean;
+  /**
+   * 扫描根目录：null = 用 VS Code 打开的工作区（默认）；
+   * 绝对路径 = 用户经「选择目录」挑的其它目录（可在工作区之外）。
+   */
+  scopeRoot: string | null;
 }
 
 /** 表达式集规范形态（附录 A，version 3）。 */

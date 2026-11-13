@@ -55,7 +55,7 @@ export async function applyChanges(
       continue;
     }
 
-    const reread = await readText(uriStr, cfg);
+    const reread = await readText(uriStr, cfg, state.scopeRoot);
     if (reread.skip) {
       hashSkips.push({ uri: uriStr, reason: reread.skip });
       continue;
