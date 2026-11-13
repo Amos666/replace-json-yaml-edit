@@ -37,7 +37,7 @@
 | ③ 结果 | §8.1 / §8.3 diff 预览（行号、−/+、上下文、警示条、读屏可读文本模式） | `panel.js:diffPaneHtml()` / `renderDiffLines()`；`case 'diff-mode'` 切换 `−old / +new` 文本模式；`.diff-warn` |
 | ③ 结果 | §8.2 / §7.5 报告态 | `panel.js:onReport()` / `reportPanelHtml()`；`exportReport` / `showReport` |
 | 底栏 | §8.1 统计 + 预览全部 Diff + 应用（主按钮）+ Ctrl+Z 提示 | `panel.html:footer.bottombar`（sticky flex 末端）；`panel.js:renderBottomBar()` |
-| 底栏 | §8.2 应用守卫（delete/deleteLine 且 >20 汇总确认、>500 明细确认） | `panel.js:requestApply()` + `showConfirm()` |
+| 底栏 | §8.2 应用即保存（0.1.4：点「应用」直接提交，不弹明细确认框） | `panel.js:requestApply()`（`showConfirm()` 仅保留给「仅保留命中」批量操作） |
 | 全局 | §8.2 状态机、300ms 指令防抖、概览跳分组 | `commitInstructions(300ms)`、`sendFilter(150ms)`、`sendGlob(300ms)`、`case 'jump'` |
 | 全局 | §8.4 高密度（24px 行高 / 4·8 间距 / 2–4px 圆角 / 无阴影渐变 / 三级字阶） | `panel.css` `--row-h:24px`、`--sp-1..6`、`--radius:2-3px`、`.sec-title/.tree-label/.sec-note` 三级 |
 | 全局 | §8.5 四态（骨架/空态/错误态/禁用态）每区块齐备 | `skeletonHtml()`（首屏静态 `#ins-body/#scope-body/#results-body`）、`emptyState()`、`errBox()`（三区均注入）、`applyDisabled()` |
@@ -57,7 +57,7 @@
 |---|---|---|
 | `src/ui/panel.html`（新建） | Webview 模板：CSP meta（占位符原样）、`{{CODICON_CSS_URI}}`/`{{CSS_URI}}`/`{{JS_URI}}`/`{{NONCE}}` 契约引用、Toolbar、常驻概览条、全局错误条、三区块静态骨架（首屏加载态）、粘性底栏、确认对话框、`aria-live` 区域。首屏状态不含业务数据，只留容器/骨架占位。 | §8.7、§8.1、§8.5（加载骨架）、`protocol.ts`「Webview 资源契约」 |
 | `src/ui/panel.css`（新建，833 行） | 官方变量别名层（零硬编码色）；四主题 + HC 全量 1px `contrastBorder`；高密度控件（24px/4·8 间距/2–4px 圆角/无阴影渐变）；按钮/输入/徽标/三态勾选/tab/seg/树/diff/审阅/报告/对话框/toast；四态样式；`:focus-visible` 焦点环；过渡与 reduced-motion；容器查询 + 媒体查询窄宽度降级。 | §8.0、§8.3、§8.4、§8.5、§8.6、§8.8、附录 D 规范 A/B/C/D |
-| `src/ui/panel.js`（新建，1484 行） | `acquireVsCodeApi()` + `message` 收 7 类消息；发全 19 类 `WebviewToHost` 消息 + `ready`；`setState/getState` 持久化 13 项纯 UI 状态；三区全量渲染、四态、审阅态、报告态、确认守卫、事件委托、键盘导航、150/300ms 防抖、命中集 H 显示层求值。 | §8.1–§8.10、§6.3/§6.4、`protocol.ts` |
+| `src/ui/panel.js`（1711 行） | `acquireVsCodeApi()` + `message` 收 7 类消息；发全 23 类 `WebviewToHost` 消息（含 `ready`）；`setState/getState` 持久化 13 项纯 UI 状态；三区全量渲染、四态、审阅态、报告态、批量操作二次确认（应用已改直接保存）、事件委托、键盘导航、150/300ms 防抖、命中集 H 显示层求值。 | §8.1–§8.10、§6.3/§6.4、`protocol.ts` |
 | `UI-DELIVERY.md`（新建） | 本四件套说明。 | 附录 C |
 
 未改动任何其它文件。`src/ui/codicon.css`、`codicon.ttf` 保持原样；`package.json` / `src/extension.ts` / `src/core/**` / `src/shared/**` / `src/controllers/**` / `esbuild.mjs` / `tsconfig.json` / `README.md` 均属其它 Agent，未触碰。
@@ -146,7 +146,7 @@
 - **G5 · `tree` 不回传 `treeFilter` / `selection`**：「已解析」回显与 glob 只读摘要态、overrides 是否存在只能靠前端输入态与 `init` 推断。建议 `TreePayload` 回传 `TreeFilter` 与 `SerializedSelection`（或新增 `selection` 消息）。
 - **G6 · 审阅 Space 无 `toggle` 动作**：`ReviewAction` 无 toggle，逐个审阅的 `Space` 以 `select { uri, checked }` 实现切换（符合 §6.4「即时写 overrides」），语义正确但动作名不在 `ReviewAction` 枚举内。
 - **G7 · `codicon-steps` 不存在**：§8.5 映射表给「逐个审阅 = `steps`」，但随扩展分发的 `@vscode/codicons` 中无 `codicon-steps`（实测 `grep codicon-steps:before` 为 0）。已改用语义最接近且真实存在的 `debug-step-over`，全站保持一致；建议规格回填修订映射表。
-- **G8 · 应用 >500 明细确认受限**：`requestApply()` 的 >500 明细列表只能列出 `flat` 前 40 项（协议未提供逐文件变更明细载荷），其余以「…… 其余文件省略」提示。
+- **G8 · 应用确认已移除（0.1.4）**：反馈「文件太多时逐条确认无法操作」，`requestApply()` 点击即提交，宿主 `applyChanges` 的 deleteGuard/`confirmed` 一并删除；误改安全性改由第 ③ 步 diff 预览 + 一次 Ctrl+Z 整体撤销 + 应用前 hash 二次校验承担。原 >500 明细列表（只能列 `flat` 前 40 项）随弹框一起移除。
 - **G9 · 键位实现方式与 §8.6 表述差异**：§8.6 原文要求快捷键经 `keybinding` contribution + `when` 子句转发；但 Webview 内键盘事件宿主收不到，团队分工明确要求「Webview 内键位在 `panel.js` 内实现即可」。已按后者在前端实现全部键位；如仍需命令面板键位，需集成方在 `package.json` 补 `keybindings` 并转发命令。
 - **G10 · §8.9 / §6.5 部分 P1 未实现**：路径输入失焦红波浪线校验、`@` 结构自动补全、sed 简写粘贴自动展开表单（保留原式注释）、非法 sed 特性「为什么不支持 + 怎么改」提示、>500 节点虚拟滚动。已实现：文本 `flags` 仅接受 `g/i/m` 的红框校验、过滤框 glob 括号平衡校验与错误态、树/结果区 `max-height + overflow:auto`（非虚拟滚动）。这些属 P1 / 增强项，建议排期补齐。
 - **G11 · 引擎 Tab 语义**：§8.1 ASCII 把「结构化区 / 文本区」画成两个子区，未明确 Tab 是「视图过滤」还是「新建默认值」。已实现为**视图过滤 + 数量提示**（两 Tab 与区块② 目标格式分段联动到同一 `S.targetFormat`，双引擎指令共存、切换不改已有指令），并在指令区显示「共 N 条（双引擎混用）」。若产品期望「始终并列显示全部指令」，需调整 `renderInstructions()` 的过滤逻辑（一行改动）。

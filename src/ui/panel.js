@@ -1171,7 +1171,7 @@
       '<div class="bb-stats">变更 <span class="bb-n">' + n + '</span> · 文件 <span class="bb-n">' + f + '</span> · 已选 <span class="bb-n">' + sel + '</span></div>' +
       '<div class="bb-actions">' +
       '<button type="button" class="btn btn-sec" data-action="preview-all">' + ic('preview') + ' 预览全部 Diff</button>' +
-      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '应用变更')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
+      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '点击即保存所选变更（无需确认），一次 Ctrl+Z 可整体撤销')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
       '</div>' +
       '<div class="bb-hint">' + ic('info') + ' 一次 Ctrl+Z 整体撤销</div>';
   }
@@ -1315,7 +1315,7 @@
     }
   });
 
-  /* ── 审阅动作 / 应用确认 / toast ────────────────────────── */
+  /* ── 审阅动作 / 批量二次确认 / toast ───────────────────── */
   function reviewAction(action) {
     const uri = S.review.item ? S.review.item.uri : undefined;
     const msg = { type: 'review', action: action };
@@ -1342,23 +1342,11 @@
     flushPending(); // 先把未落定的编辑交给宿主，再取当前范围/补丁
     const uris = selectedUris();
     if (!uris.length) { toast('请先选择文件范围'); return; }
-    const hasDel = S.instructions.some(function (i) { return i.enabled && (i.kind === 'delete' || i.textOp === 'deleteLine'); });
     const n = S.counts.changes || 0;
-    const doApply = function () { flushPending(); post({ type: 'apply', uris: uris, confirmed: true }); };
-    if (hasDel && n > 20) {
-      if (n > 500) {
-        const detail = S.flat.filter(function (f) { return f.checked === true; }).slice(0, 40).map(function (f) {
-          return '<li>' + esc(f.path) + ' · ' + f.changeCount + ' 处</li>';
-        }).join('');
-        showConfirm('确认应用（大量删除类变更）',
-          '<p>检测到删除类操作且命中 <strong>' + n + '</strong> 处变更，涉及 <strong>' + uris.length + '</strong> 个文件。请逐条核对明细：</p><ul>' + detail + '</ul>' + (uris.length > 40 ? '<p>…… 其余文件省略</p>' : ''), doApply);
-      } else {
-        showConfirm('确认应用（含删除类操作）',
-          '<p>检测到删除类操作且命中 <strong>' + n + '</strong> 处变更，涉及 <strong>' + uris.length + '</strong> 个文件。确认后一次提交，一次 Ctrl+Z 可整体撤销。</p>', doApply);
-      }
-      return;
-    }
-    doApply();
+    // 0.1.4 反馈：应用不再弹「逐条列明细」确认框——文件多时根本核对不过来。
+    // 点击即提交：diff 明细已在第 ③ 步预览里可见，应用后一次 Ctrl+Z 可整体撤销。
+    post({ type: 'apply', uris: uris });
+    toast('正在应用 ' + n + ' 处变更（' + uris.length + ' 个文件）…');
   }
   function buildExpressionSet() {
     return {

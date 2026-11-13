@@ -193,7 +193,8 @@ export type WebviewToHost =
   | { type: 'scan' }
   | { type: 'cancelScan' }
   | { type: 'previewAll' }
-  | { type: 'apply'; uris: string[]; confirmed: boolean }
+  // 应用即保存（0.1.4 起不再有确认环节）；diff 预览在第 ③ 步给出，一次 Ctrl+Z 整体撤销
+  | { type: 'apply'; uris: string[] }
   | { type: 'openFile'; uri: string; line?: number }
   | { type: 'previewFile'; uri: string; path: string }
   | { type: 'importExpressionSet' }

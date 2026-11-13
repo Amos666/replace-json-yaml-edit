@@ -1,4 +1,4 @@
-/** §7.5 应用与一次撤销 + §7.5/§8.2 删除类确认守卫 + §6.6 hash 二次校验。 */
+/** §7.5 应用与一次撤销 + §6.6 hash 二次校验。 */
 
 import * as vscode from 'vscode';
 import { detectConflicts } from '../core/index.ts';
@@ -11,36 +11,17 @@ export interface ApplyResult {
   hashSkips: SkipItem[];
 }
 
-/** 前端发 confirmed，host 二次校验：delete/deleteLine 命中 >20 / >500 才要求确认。 */
-export function deleteGuard(state: HostState, uris: string[]): { needed: boolean; large: boolean } {
-  const hasDel = state.instructions.some(
-    (i) => i.enabled && (i.kind === 'delete' || i.textOp === 'deleteLine'),
-  );
-  const totalChanges = uris.reduce(
-    (n, u) => n + (state.records.get(u)?.changeCount ?? 0),
-    0,
-  );
-  if (!hasDel) return { needed: false, large: false };
-  return { needed: totalChanges > 20, large: totalChanges > 500 };
-}
-
 /**
  * 一次 WorkspaceEdit 提交 → 一次 Ctrl+Z 全撤。
+ * 应用即保存（0.1.4 反馈：文件多时逐条确认不现实），删除类变更同样直接写回——
+ * diff 明细在第 ③ 步预览已给出，误改可整体撤销。
  * 每个文件 apply 前重读并比对扫描时 hash，不一致跳过进报告（防扫描/应用之间被改动）。
  */
 export async function applyChanges(
   state: HostState,
   cfg: HostConfig,
   uris: string[],
-  confirmed: boolean,
 ): Promise<ApplyResult> {
-  const guard = deleteGuard(state, uris);
-  if (guard.needed && !confirmed) {
-    throw new Error(
-      `删除类变更命中超过 20 处（共 ${uris.reduce((n, u) => n + (state.records.get(u)?.changeCount ?? 0), 0)} 处），需要确认后再应用。`,
-    );
-  }
-
   const we = new vscode.WorkspaceEdit();
   const appliedUris: string[] = [];
   const hashSkips: SkipItem[] = [];

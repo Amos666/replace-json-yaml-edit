@@ -439,7 +439,7 @@ sed 简写解析规则（`sedDialect.ts`）：
 | 编码 | `TextDecoder('utf-8', { fatal: true })` 解码失败 → 跳过并报告「非 UTF-8 文本已忽略」（不做转码，避免写坏） |
 | 巨型文件 | > 5MB 跳过文本引擎并提示（可配置放宽） |
 | 全类型默认开启 | 文件类型是否参与由**指令 `fileScope`** 决定（§6.1）：`all` = 不过滤扩展名，`custom` = 用户自定义；**两者都仍受本表安全跳过与目录选择约束**——「不加扩展名过滤」≠「放松安全」 |
-| 危险模式提醒 | 删除行指令命中行数 > 500 时应用前弹汇总确认 |
+| 危险模式提醒 | 应用即保存（0.1.4 起不再弹确认，避免文件多时无法操作）：删除类变更也直接写回，误改靠第 ③ 步 diff 预览 + 一次 Ctrl+Z 整体撤销 |
 
 ### 5.4 多表达式执行语义（v1.3 补充 fileScope 挑选）
 
@@ -751,11 +751,11 @@ await vscode.workspace.applyEdit(we);   // 一次提交 → 一次 Ctrl+Z 全撤
 
 ### 8.2 交互流（状态机）
 
-`输入态 → 扫描中 → 结果态 → （预览）→ 确认 → 应用 → 报告态`
+`输入态 → 扫描中 → 结果态 → （预览）→ 应用 → 报告态`
 
 - 指令或选择变更后 **300ms 防抖自动重扫**；扫描带进度（`12/17`）与取消。
 - 概览条是全局健康度：任何一项异常（警示/失败/冲突）对应数字变黄/红，点击跳到对应分组。
-- 「应用」触发条件守卫：存在 delete/deleteLine 且命中 > 20 → 汇总确认；> 500 → 列明细确认。
+- 「应用」点击即保存（0.1.4 反馈：文件多时逐条列明细确认无法操作）：不再弹任何确认框，直接提交 WorkspaceEdit；删除类变更同样直接写回，安全性由「第 ③ 步 diff 预览 + 一次 Ctrl+Z 整体撤销 + 应用前 hash 二次校验」保证。
 - 无匹配空态：给出两条可点建议（放宽筛选条件 / 扩大文件范围），点击自动改写。
 - 解析失败文件独立分组，悬浮显示 error 首行；文本指令照常执行的结构化失败文件标「仅结构化跳过」。
 - **（v1.3）扩展名策略变化（新增/切换格式/切 all↔custom）也触发重扫**，树候选扩展名与命中计数同步刷新。
@@ -804,7 +804,7 @@ await vscode.workspace.applyEdit(we);   // 一次提交 → 一次 Ctrl+Z 全撤
 - 所有可交互元素 `:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1–2px }`；**禁止裸写 `outline: none`**。
 - 过渡 **120–200ms ease**，只作用于 color / background / border / opacity；`@media (prefers-reduced-motion: reduce)` 下全部归零。
 - 语义化标签 + ARIA：引擎切换 `role=tablist/tab`、树 `role=tree/treeitem`、三态勾选 `role=checkbox + aria-checked="mixed"`、批量操作条 `role=toolbar`、审阅进度 `role=progressbar`；图标按钮必须有 `aria-label`；diff 提供「读屏可读的 −old / +new 文本模式」。
-- 快捷键经 `keybinding` contribution + `when` 子句转发（不裸监听）：`↑↓` 移动、`Space` 勾选、`Enter` 预览、`Ctrl+Enter` 应用（带确认）、`Ctrl+F` 聚焦过滤框；逐个审阅键位见 §6.4；Tab 顺序：指令 → 范围树 → 结果树 → 底栏。
+- 快捷键经 `keybinding` contribution + `when` 子句转发（不裸监听）：`↑↓` 移动、`Space` 勾选、`Enter` 预览、`Ctrl+Enter` 应用（直接保存，无确认框）、`Ctrl+F` 聚焦过滤框；逐个审阅键位见 §6.4；Tab 顺序：指令 → 范围树 → 结果树 → 底栏。
 - 不滥用 `!important`；不写死 px 高度导致文字截断（用 min-height）。
 
 ### 8.7 Webview 工程落地
@@ -895,7 +895,7 @@ await vscode.workspace.applyEdit(we);   // 一次提交 → 一次 Ctrl+Z 全撤
 | 大文件卡 UI | >1MB 解析/补丁进 Worker；树与结果虚拟滚动；文本引擎 >5MB 跳过 |
 | 扫描与应用之间文件被改 | hash 二次校验，不一致跳过进报告 |
 | 只读/权限拒绝 | 逐文件 try/catch，进「失败」分组，不中断批次 |
-| 误操作 | 全程预览制 + WorkspaceEdit 单次提交整体撤销 + 删除类二次确认 |
+| 误操作 | 全程预览制 + WorkspaceEdit 单次提交整体撤销 + 应用前 hash 二次校验（0.1.4 起应用不再二次确认） |
 
 ## 10. 测试策略（必须全部落地）
 

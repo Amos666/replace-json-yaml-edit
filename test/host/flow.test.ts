@@ -382,6 +382,12 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     assert.ok(applyBtn, '应有应用按钮');
     assert.notEqual(applyBtn?.getAttribute('aria-disabled'), 'true', '应用按钮不应被禁用');
     applyBtn!.click();
+    // 0.1.4：点「应用」直接保存，不再弹逐条明细确认框（文件多时无法核对）
+    assert.equal(
+      ui.q('#confirm-modal')?.hasAttribute('hidden'),
+      true,
+      '点应用不应弹出确认对话框',
+    );
     await until(
       () => stub.stubState.applyEditCalls > 0,
       'applyChanges 提交 WorkspaceEdit',
@@ -465,5 +471,84 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     );
     // 工作区内的文件本轮不应再被改动（范围已切到外目录）
     assert.equal(read('aaa/bbbb/xs1.yml'), 'image: new:v3\nenv: dev\n', '工作区文件保持上一轮结果');
+  });
+
+  /* ── 0.1.4：应用不再弹确认，删除类批量同样直接保存 ───────── */
+
+  await t.test('删除类批量变更（>20 处）点「应用」直接保存，不弹确认框', async () => {
+    // 造 30 个 yml，让删除类变更远超旧守卫的 20 处阈值（旧逻辑此处必弹明细确认框）
+    for (let i = 0; i < 30; i += 1) {
+      write(wsRoot, `bulk/b${String(i).padStart(2, '0')}.yml`, 'image: old:v1\nenv: dev\n');
+    }
+    assert.ok(
+      ui.q('[data-action="reset-scope-root"]'),
+      '上一用例后应处于自选扫描根状态',
+    );
+    ui.click('[data-action="reset-scope-root"]');
+    await until(
+      () => ui.rows().some((p) => p.startsWith('bulk/')),
+      `恢复工作区根目录后应列出新建的 bulk 文件，实际：${ui.rows().join(', ')}`,
+    );
+
+    // 新增第二条指令：结构化删除 $.env（YAML）
+    ui.click('[data-action="wizard-step"][data-step="2"]');
+    ui.click('[data-action="add-ins"]');
+    const lastInsRow = (): HTMLElement => {
+      const rs = [...ui.win.document.querySelectorAll('[data-ins-row]')];
+      assert.ok(rs.length >= 2, `应有两条指令行，实际 ${rs.length}`);
+      return rs[rs.length - 1] as HTMLElement;
+    };
+    const fmtBtn = lastInsRow().querySelector('[data-action="ins-format"][data-format="yaml"]') as HTMLElement | null;
+    if (fmtBtn) fmtBtn.click(); // 新指令默认跟随目标格式，这里显式钉死 YAML
+    let row = lastInsRow();
+    const pathInput = row.querySelector('[data-ins-field="path"]') as HTMLInputElement;
+    assert.ok(pathInput, '应有路径输入框');
+    pathInput.value = '$.env';
+    pathInput.dispatchEvent(new ui.win.Event('input', { bubbles: true }));
+    row = lastInsRow(); // kind 变更会重渲染行，必须重新取
+    const opSel = row.querySelector('select[data-ins-field="kind"]') as HTMLSelectElement;
+    assert.ok(opSel, '应有操作类型下拉');
+    opSel.value = 'delete';
+    opSel.dispatchEvent(new ui.win.Event('change', { bubbles: true }));
+
+    // 切到第 ③ 步：set + delete 合计应 ≥20 处（超过旧守卫阈值）
+    ui.click('[data-action="wizard-step"][data-step="3"]');
+    await until(
+      () => /变更\d{2,}/.test(ui.q('#ov-stats')?.textContent ?? ''),
+      `删除类变更应 ≥20 处，概览：${ui.q('#ov-stats')?.textContent}`,
+    );
+
+    const applyBefore = stub.stubState.applyEditCalls;
+    const reportBefore = stub.stubState.hostMessages.filter((m) => m.type === 'report').length;
+    (ui.q('[data-action="apply"]') as HTMLElement).click();
+
+    // 核心断言：不弹任何确认框，直接进入应用
+    assert.equal(
+      ui.q('#confirm-modal')?.hasAttribute('hidden'),
+      true,
+      '删除类批量变更也不应弹确认对话框',
+    );
+    await until(
+      () => stub.stubState.applyEditCalls > applyBefore,
+      '删除类批量 WorkspaceEdit 已提交',
+    );
+    await until(
+      () => stub.stubState.hostMessages.filter((m) => m.type === 'report').length > reportBefore,
+      '删除类批量应用产生执行报告',
+    );
+    assert.equal(
+      ui.q('#confirm-modal')?.hasAttribute('hidden'),
+      true,
+      '应用完成后确认框仍不应出现',
+    );
+
+    // 落盘核验：env 被删、image 被改写
+    const bulk0 = read('bulk/b00.yml');
+    assert.match(bulk0, /image: new:v9/, `bulk 文件应写入新值，实际「${bulk0}」`);
+    assert.doesNotMatch(bulk0, /env:/, `bulk 文件的 env 行应被删除，实际「${bulk0}」`);
+    assert.equal(read('bulk/b29.yml'), 'image: new:v9\n', '第 30 个 bulk 文件同样写入');
+    const xs1 = read('aaa/bbbb/xs1.yml');
+    assert.match(xs1, /image: new:v9/, `xs1 应同时完成 set，实际「${xs1}」`);
+    assert.doesNotMatch(xs1, /env:/, `xs1 的 env 行应被删除，实际「${xs1}」`);
   });
 });

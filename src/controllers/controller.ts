@@ -362,7 +362,7 @@ export class PanelController {
           break;
         case 'apply':
           await this.flushRecompute();
-          await this.onApply(msg.uris, msg.confirmed);
+          await this.onApply(msg.uris);
           break;
         case 'openFile': await this.onOpenFile(msg.uri, msg.line); break;
         case 'previewFile': await this.onPreviewFile(msg.uri, msg.path); break;
@@ -544,7 +544,7 @@ export class PanelController {
 
   /* ── 应用 §7.5 ─────────────────────────────────────────── */
 
-  private async onApply(uris: string[], confirmed: boolean): Promise<void> {
+  private async onApply(uris: string[]): Promise<void> {
     if (!uris.length) {
       this.post({ type: 'error', payload: { message: '请先选择文件范围' } });
       return;
@@ -553,7 +553,7 @@ export class PanelController {
     this.postState('applying');
     try {
       const cfg = readConfig();
-      const result = await applyChanges(this.state, cfg, uris, confirmed);
+      const result = await applyChanges(this.state, cfg, uris);
       const report = buildReport(this.state, result.appliedUris, result.changes, result.hashSkips);
       this.state.lastReport = report;
       this.textCache.clear(); // 文件已变更，缓存失效
@@ -753,7 +753,7 @@ export class PanelController {
       void vscode.window.showInformationMessage(`${DISPLAY_NAME}：表达式集未匹配到可应用的文件。`);
       return;
     }
-    await this.onApply(uris, true);
+    await this.onApply(uris);
   }
 
   async commandShowReport(): Promise<void> {
