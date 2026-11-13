@@ -48,8 +48,9 @@ npm run test:integration   # xvfb-run 启动真实 VS Code 跑集成测试（Lin
 
 ## 发布前
 
-- 把 `package.json` 的 `publisher` 改成自己的 Marketplace publisher ID；**仅上传 GitHub 不需要改**。
+- `publisher` 已设为 `ghemail`（与 `multi-project-tool` 的 Marketplace publisher 一致）；发布到 Marketplace 需使用同一账号。仅上传 GitHub 不需要该字段。
 - `repository` 已指向 `https://github.com/Amos666/replace-json-yaml-edit.git`。
+- `.vsix` 安装包与 `test/testdata/` 测试数据不进入 Git（见 `.gitignore`），安装包由 CI 构建并挂到 GitHub Release。
 - `npm run package` 产出 `.vsix`；esbuild 以 `--legal-comments=linked` 提取第三方许可注释，`THIRD-PARTY-NOTICES.md` 随包分发。
 - 超大工作区可调 `batchReplace.maxFiles`（默认 5000）；面板顶部筛选条件越具体，扫描越快。
 - 在真实 VS Code 中按 §10.6 清单走查 Light / Dark / High Contrast / High Contrast Light 四主题，并手动走一遍 Webview 的「扫描 → 预览 → 应用 → Ctrl+Z」交互（自动化集成测试已覆盖 应用 → 撤销 部分）。

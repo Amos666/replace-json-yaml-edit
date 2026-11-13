@@ -3,7 +3,7 @@
   "displayName": "Batch Replace for JSON & YAML",
   "description": "Batch replace values across JSON, YAML and any text files by path or regex - preview every diff in a visual panel, apply to hundreds of files with one undo.",
   "version": "0.1.2",
-  "publisher": "your-publisher",
+  "publisher": "ghemail",
   "license": "MIT",
   "repository": {
     "type": "git",
