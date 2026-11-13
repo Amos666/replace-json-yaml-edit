@@ -1041,10 +1041,10 @@
   function renderWizard() {
     const w = el('wizard'); if (!w) return;
     const steps = STEPS.map(function (st, i) {
-      return (i ? '<span class="wiz-sep" aria-hidden="true">' + ic('chevron-right') + '</span>' : '') +
-        '<button type="button" class="wiz-step" data-action="wizard-step" data-step="' + st.id + '"' +
+      return (i ? '<span class="wiz-sep" aria-hidden="true"></span>' : '') +
+        '<button type="button" class="wiz-step' + (st.id < S.step ? ' is-done' : '') + '" data-action="wizard-step" data-step="' + st.id + '"' +
         (S.step === st.id ? ' aria-current="step"' : '') + ' title="跳到第 ' + st.id + ' 步：' + esc(st.label) + '">' +
-        '<span class="wiz-n">' + st.id + '</span>' + esc(st.label) + '</button>';
+        '<span class="wiz-n">' + (st.id < S.step ? ic('check') : st.id) + '</span>' + esc(st.label) + '</button>';
     }).join('');
     const scanning = S.phase === 'scanning';
     const scanBtn = S.step === 1
