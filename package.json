@@ -2,7 +2,7 @@
   "name": "replace-json-yaml-edit",
   "displayName": "Batch Replace for JSON & YAML",
   "description": "Batch replace values across JSON, YAML and any text files by path or regex - preview every diff in a visual panel, apply to hundreds of files with one undo.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "your-publisher",
   "license": "MIT",
   "repository": {
@@ -122,8 +122,15 @@
         "batchReplace.defaultExclude": {
           "type": "array",
           "items": { "type": "string" },
-          "default": ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/out/**"],
+          "default": ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/out/**", "**/.vscode-test/**"],
           "description": "Glob patterns excluded from the workspace file scan."
+        },
+        "batchReplace.maxFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 20000,
+          "description": "Maximum number of files pulled into the file tree. Lower this if opening the panel is slow on a very large workspace; use the filter box to narrow the range instead."
         }
       }
     }

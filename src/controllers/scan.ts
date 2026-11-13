@@ -17,7 +17,7 @@ import {
 } from '../core/index.ts';
 import type { TreeFilter } from '../core/types.ts';
 import type { DiffLine, FileDiff, FlatItem, TreeNode } from '../shared/protocol.ts';
-import { buildEquivalentGlob } from './state.ts';
+import { buildEquivalentGlob, searchIncludeGlob } from './state.ts';
 import type { FileEntry, FileRecord, HostConfig, HostState, SkipItem, TextCacheEntry } from './types.ts';
 
 export class ScanCancelledError extends Error {
@@ -29,22 +29,33 @@ export function readConfig(): HostConfig {
   return {
     maxMatches: c.get<number>('maxMatchesPerFile', 2000),
     maxFileSizeMB: c.get<number>('maxFileSizeMB', 5),
+    maxFiles: Math.max(100, Math.min(20000, c.get<number>('maxFiles', 5000))),
     defaultExclude: c.get<string[]>('defaultExclude', [
-      '**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**',
+      '**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**', '**/.vscode-test/**',
     ]),
   };
 }
 
-/** 第 1 层：一次 findFiles（2 万上限），建 FileEntry[] 与 uri↔relPath 双向映射。 */
+/** 第 1 层：一次 findFiles（可配置上限），建 FileEntry[] 与 uri↔relPath 双向映射。 */
 export async function refreshFileList(
   state: HostState,
   cfg: HostConfig,
   token?: vscode.CancellationToken,
 ): Promise<void> {
-  const exclude = cfg.defaultExclude.length
-    ? `{${cfg.defaultExclude.join(',')}}`
-    : undefined;
-  const uris = await vscode.workspace.findFiles('**/*', exclude, 20000, token);
+  // 用户设定的目录/glob 优先（第①步「先选文件」），其次按启用指令的 fileScope 收窄。
+  // 两者都只是「拉哪些文件进树」的优化；真正的作用范围仍由 runScan 的 matchScope 逐文件裁决。
+  const userInclude = (state.selection.baseInclude ?? []).filter((g) => g && g !== '**/*');
+  const scopeGlob = searchIncludeGlob(state.instructions);
+  let include = '**/*';
+  if (userInclude.length) {
+    include = userInclude.length === 1 ? userInclude[0] : `{${userInclude.join(',')}}`;
+  } else if (scopeGlob) {
+    include = scopeGlob;
+  }
+  const excludeGlobs = [...cfg.defaultExclude, ...(state.selection.baseExclude ?? [])];
+  const exclude = excludeGlobs.length ? `{${excludeGlobs.join(',')}}` : undefined;
+  const uris = await vscode.workspace.findFiles(include, exclude, cfg.maxFiles, token);
+  state.listTruncated = uris.length >= cfg.maxFiles;
   const folders = vscode.workspace.workspaceFolders ?? [];
 
   const entries: FileEntry[] = [];
@@ -342,7 +353,10 @@ export async function runScan(
   cancelled: () => boolean,
   progress?: (scanned: number, total: number) => void,
 ): Promise<void> {
-  const cand = candidateExtensions(state.instructions);
+  // 第①步「先选文件」时用户还没写指令：此时所有文件都应可选，
+  // 且 applicableFor.length===0 → 循环内完全不读盘，只产出文件树。
+  const hasEnabled = state.instructions.some((i) => i.enabled);
+  const cand = hasEnabled ? candidateExtensions(state.instructions) : 'all';
   const candSet = cand === 'all' ? null : cand;
   state.candidateExtensions = cand === 'all' ? 'all' : [...cand].sort();
 

@@ -78,7 +78,15 @@
     scopeEditId: null,
     diffTextMode: false,
     focusPath: null,
+    step: 1,                          // 三步向导：① 选择文件 ② 编辑值 ③ 预览并应用（不持久化）
+    previewUri: '',                   // 双击预览弹框当前文件
   };
+
+  const STEPS = [
+    { id: 1, label: '选择文件' },
+    { id: 2, label: '编辑值' },
+    { id: 3, label: '预览并应用' },
+  ];
 
   try {
     const saved = vscode.getState();
@@ -92,6 +100,19 @@
   }
 
   let flatByPath = Object.create(null);
+  let flatVersion = 0;
+  let visCache = { key: '', value: [] };
+  let hitCache = { key: '', value: new Set() };
+  let selCache = { version: -1, value: [] };
+  let dirStats = Object.create(null);
+
+  /** 文件列表或勾选态变化时递增，用于失效前端派生缓存。 */
+  function bumpFlatVersion() {
+    flatVersion += 1;
+    visCache = { key: '', value: [] };
+    hitCache = { key: '', value: new Set() };
+    selCache = { version: -1, value: [] };
+  }
   function rebuildMaps() {
     flatByPath = Object.create(null);
     S.flat.forEach(function (f) { flatByPath[f.path] = f; });
@@ -218,24 +239,36 @@
   }
   function hitPathSet() {
     const raw = (S.filter.raw || '').trim();
+    const key = flatVersion + '|' + raw;
+    if (hitCache.key === key) return hitCache.value;
     const set = new Set();
     S.flat.forEach(function (f) {
       if (!raw) { set.add(f.path); return; }
       if (Array.isArray(f.hitRanges) && f.hitRanges.length) set.add(f.path);
       else if (matchFilter(f.path, raw)) set.add(f.path);
     });
+    hitCache = { key: key, value: set };
     return set;
   }
   function visibleFlat() {
+    const key = [flatVersion, S.filter.raw, S.onlyApplicable ? 1 : 0, S.onlyHits ? 1 : 0, S.showAll ? 1 : 0].join('|');
+    if (visCache.key === key) return visCache.value;
     const hits = hitPathSet();
-    return S.flat.filter(function (f) {
+    const out = S.flat.filter(function (f) {
       if (!S.showAll && S.onlyApplicable && !f.applicable) return false;
       if (S.onlyHits && !(f.changeCount > 0)) return false;
       return hits.has(f.path);
     }).sort(function (a, b) { return a.path.localeCompare(b.path); });
+    visCache = { key: key, value: out };
+    return out;
   }
   function hitUris() { return visibleFlat().map(function (f) { return f.uri; }).filter(Boolean); }
-  function selectedUris() { return S.flat.filter(function (f) { return f.checked === true; }).map(function (f) { return f.uri; }).filter(Boolean); }
+  function selectedUris() {
+    if (selCache.version === flatVersion) return selCache.value;
+    const out = S.flat.filter(function (f) { return f.checked === true; }).map(function (f) { return f.uri; }).filter(Boolean);
+    selCache = { version: flatVersion, value: out };
+    return out;
+  }
 
   /* ── 小组件 HTML ───────────────────────────────────────── */
   function skeletonHtml(n) {
@@ -429,8 +462,9 @@
     const eng = curEngine();
     const title = eng === 'structured' ? '旧值分布统计（防误伤）' : '命中样本预览（前 3 个片段及上下文）';
     const ico = eng === 'structured' ? 'graph' : 'search';
+    const diffs = S.diffs.slice(0, 200); // 大工作区只统计前 200 个文件，避免渲染卡顿
     const removes = [];
-    S.diffs.forEach(function (d) {
+    diffs.forEach(function (d) {
       (d.lines || []).forEach(function (l) { if (l.kind === 'remove') removes.push(l.text); });
     });
     if (eng === 'structured') {
@@ -448,7 +482,7 @@
       return panelHtml(ico, title, rows);
     }
     const samples = [];
-    for (const d of S.diffs) {
+    for (const d of S.diffs.slice(0, 200)) {
       const lines = d.lines || [];
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].kind === 'remove') {
@@ -610,24 +644,38 @@
     if ((S.filter.raw || '').trim()) return true;     // 过滤态展开含命中的目录
     return level === 0;                              // 默认展开顶层
   }
-  function countHitsUnder(dir, visSet) {
-    let n = 0; visSet.forEach(function (p) { if (p.indexOf(dir + '/') === 0) n++; }); return n;
+  const MAX_ROWS = 1500;
+  function buildDirStats(vis) {
+    dirStats = Object.create(null);
+    for (const f of vis) {
+      const parts = f.path.split('/');
+      let acc = '';
+      for (let i = 0; i < parts.length - 1; i++) {
+        acc = acc ? acc + '/' + parts[i] : parts[i];
+        let st = dirStats[acc];
+        if (!st) { st = dirStats[acc] = { tot: 0, sel: 0 }; }
+        st.tot++;
+        if (f.checked === true) st.sel++;
+      }
+    }
   }
-  function selText(dir, visSet) {
-    let tot = 0, sel = 0;
-    visSet.forEach(function (p) {
-      if (p.indexOf(dir + '/') === 0) { tot++; const f = flatByPath[p]; if (f && f.checked === true) sel++; }
-    });
-    return tot ? (sel + '/' + tot + ' 已选') : '';
+  function countHitsUnder(dir) {
+    const st = dirStats[dir];
+    return st ? st.tot : 0;
   }
-  function dirCheckState(path, visSet) {
-    let tot = 0, sel = 0;
-    visSet.forEach(function (p) {
-      if (p.indexOf(path + '/') === 0) { tot++; const f = flatByPath[p]; if (f && f.checked === true) sel++; }
-    });
-    if (!tot || sel === 0) return false;
-    if (sel === tot) return true;
+  function selText(dir) {
+    const st = dirStats[dir];
+    return st && st.tot ? (st.sel + '/' + st.tot + ' 已选') : '';
+  }
+  function dirCheckState(path) {
+    const st = dirStats[path];
+    if (!st || !st.tot || st.sel === 0) return false;
+    if (st.sel === st.tot) return true;
     return 'mixed';
+  }
+  function truncatedHtml(shownCount, total) {
+    return '<div class="tree-truncated">' + ic('info') +
+      ' 仅显示前 ' + shownCount + ' 个文件（共 ' + total + ' 个）。请用筛选条件缩小范围，或在设置中调高 batchReplace.maxFiles。</div>';
   }
   function treeRowHtml(node, level, isDir, expanded, checked, visSet) {
     const pad = 6 + level * 14;
@@ -635,8 +683,8 @@
       ? '<button type="button" class="tree-chevron" data-action="toggle-dir" data-path="' + esc(node.path) + '" aria-label="' + (expanded ? '收起 ' : '展开 ') + esc(node.name) + '" aria-expanded="' + expanded + '">' + ic(expanded ? 'chevron-down' : 'chevron-right') + '</button>'
       : '<span class="tree-chevron" aria-hidden="true"></span>';
     const ico = ic(isDir ? 'folder' : 'file', 'tree-icon');
-    const cnt = isDir ? countHitsUnder(node.path, visSet) : ((flatByPath[node.path] && flatByPath[node.path].changeCount) || node.changeCount || 0);
-    const sel = isDir ? selText(node.path, visSet) : '';
+    const cnt = isDir ? countHitsUnder(node.path) : ((flatByPath[node.path] && flatByPath[node.path].changeCount) || node.changeCount || 0);
+    const sel = isDir ? selText(node.path) : '';
     const nonCand = !node.applicable;
     const tip = nonCand ? ('当前指令不适用此类型' + (node.reason ? '：' + node.reason : '')) : '';
     return '<div class="tree-row ' + (isDir ? 'is-dir' : 'is-file') + (nonCand ? ' is-noncandidate' : '') + '" ' +
@@ -655,15 +703,19 @@
       '</span></div>';
   }
   function renderTreeNode(node, level, visSet, dirSet, rows) {
+    if (rows.length >= MAX_ROWS) return;
     const isDir = node.kind === 'dir';
     if (isDir && !dirSet.has(node.path)) return;
     if (!isDir && !visSet.has(node.path)) return;
     const expanded = isDir ? isExpanded(node.path, level) : false;
-    const checked = isDir ? dirCheckState(node.path, visSet)
+    const checked = isDir ? dirCheckState(node.path)
       : (flatByPath[node.path] ? !!flatByPath[node.path].checked : !!node.checked);
     rows.push(treeRowHtml(node, level, isDir, expanded, checked, visSet));
     if (isDir && expanded && Array.isArray(node.children)) {
-      node.children.forEach(function (c) { renderTreeNode(c, level + 1, visSet, dirSet, rows); });
+      for (const c of node.children) {
+        if (rows.length >= MAX_ROWS) break;
+        renderTreeNode(c, level + 1, visSet, dirSet, rows);
+      }
     }
   }
   function flatRowHtml(f) {
@@ -682,6 +734,7 @@
   function renderTree() {
     rebuildMaps();
     const vis = visibleFlat();
+    buildDirStats(vis);
     const visSet = new Set(vis.map(function (f) { return f.path; }));
     const dirSet = new Set();
     vis.forEach(function (f) {
@@ -689,10 +742,17 @@
       for (let i = 0; i < p.length - 1; i++) { acc = acc ? acc + '/' + p[i] : p[i]; dirSet.add(acc); }
     });
     const rows = [];
-    S.tree.forEach(function (n) { renderTreeNode(n, 0, visSet, dirSet, rows); });
+    S.tree.forEach(function (n) { if (rows.length < MAX_ROWS) renderTreeNode(n, 0, visSet, dirSet, rows); });
+    if (rows.length >= MAX_ROWS && vis.length > rows.length) rows.push(truncatedHtml(rows.length, vis.length));
     return rows.length ? rows.join('') : emptyState('folder', '目录为空', '清除筛选条件', 'clear-filter');
   }
-  function renderFlat() { rebuildMaps(); return visibleFlat().map(flatRowHtml).join(''); }
+  function renderFlat() {
+    rebuildMaps();
+    const vis = visibleFlat();
+    const shown = vis.slice(0, MAX_ROWS);
+    const html = shown.map(flatRowHtml).join('');
+    return html + (vis.length > shown.length ? truncatedHtml(shown.length, vis.length) : '');
+  }
   function treeOrFlatHtml() {
     const vis = visibleFlat();
     if (!vis.length) {
@@ -806,7 +866,8 @@
   }
   function groupsHtml() {
     rebuildMaps();
-    const changed = S.flat.filter(function (f) { return f.changeCount > 0; });
+    const changedAll = S.flat.filter(function (f) { return f.changeCount > 0; });
+    const changed = changedAll.slice(0, 500); // 结果树分页保护；计数仍显示真实总数
     const reasons = S.tree.filter(function (n) { return n.reason; });
     const ops = opBadges();
     const byDir = Object.create(null);
@@ -823,8 +884,11 @@
             '<button type="button" class="icon-btn" data-action="open-file" data-path="' + esc(f.path) + '" aria-label="跳转到 ' + esc(f.path) + '" title="在编辑器中查看">' + ic('go-to-file') + '</button></div>';
         }).join('') + '</div></div>';
     }).join('');
-    let html = '<div class="group" id="group-changes"><summary>' + ic('chevron-down') + ' 变更文件 <span class="g-count">' + changed.length + '</span></summary>' +
-      '<div class="group-body">' + (dirItems || '<div class="issue-line">扫描后显示命中文件（按目录分组）</div>') + '</div></div>';
+    const truncated = changedAll.length > changed.length
+      ? '<div class="tree-truncated">' + ic('info') + ' 仅列出前 ' + changed.length + ' 个变更文件（共 ' + changedAll.length + ' 个）。</div>'
+      : '';
+    let html = '<div class="group" id="group-changes"><summary>' + ic('chevron-down') + ' 变更文件 <span class="g-count">' + changedAll.length + '</span></summary>' +
+      '<div class="group-body">' + (dirItems ? dirItems + truncated : '<div class="issue-line">扫描后显示命中文件（按目录分组）</div>') + '</div></div>';
     html += countGroup('group-warnings', '警示', S.counts.warnings, 'warning', 'is-warn');
     html += countGroup('group-parseErrors', '解析失败', S.counts.parseErrors, 'error', 'is-bad');
     html += countGroup('group-conflicts', '冲突', S.counts.conflicts, 'issues', 'is-bad');
@@ -835,7 +899,7 @@
             '<span class="gi-path">' + esc(n.path) + '</span><span class="gi-reason" title="' + esc(n.reason) + '">' + esc(n.reason) + '</span></div>';
         }).join('') + '</div></div>';
     }
-    if (!changed.length && !S.counts.warnings && !S.counts.parseErrors && !S.counts.conflicts && !S.report) {
+    if (!changedAll.length && !S.counts.warnings && !S.counts.parseErrors && !S.counts.conflicts && !S.report) {
       html = emptyState('search', '尚无结果。配置指令与文件范围后执行扫描，再预览 Diff。', '立即扫描', 'scan');
     }
     return html;
@@ -973,6 +1037,79 @@
       (it.diff ? '<div class="review-diff">' + renderDiffLines(it.diff.lines || []) + '</div>' : '') +
       reviewActionsHtml();
   }
+  /* ── 0.1.2 三步向导 ─────────────────────────────────────── */
+  function renderWizard() {
+    const w = el('wizard'); if (!w) return;
+    const steps = STEPS.map(function (st, i) {
+      return (i ? '<span class="wiz-sep" aria-hidden="true">' + ic('chevron-right') + '</span>' : '') +
+        '<button type="button" class="wiz-step" data-action="wizard-step" data-step="' + st.id + '"' +
+        (S.step === st.id ? ' aria-current="step"' : '') + ' title="跳到第 ' + st.id + ' 步：' + esc(st.label) + '">' +
+        '<span class="wiz-n">' + st.id + '</span>' + esc(st.label) + '</button>';
+    }).join('');
+    const scanning = S.phase === 'scanning';
+    const scanBtn = S.step === 1
+      ? '<button type="button" class="btn btn-primary btn-sm" data-action="scan-files"' +
+        (scanning ? ' aria-disabled="true"' : '') + ' title="按当前目录与过滤条件载入文件列表">' +
+        ic('search') + ' 扫描文件</button>'
+      : '';
+    w.innerHTML = steps + '<div class="wiz-actions">' +
+      (S.step > 1 ? '<button type="button" class="btn btn-sec btn-sm" data-action="wizard-step" data-step="' + (S.step - 1) + '">' + ic('arrow-left') + ' 上一步</button>' : '') +
+      scanBtn +
+      (S.step < 3 ? '<button type="button" class="btn btn-sec btn-sm" data-action="wizard-step" data-step="' + (S.step + 1) + '">下一步 ' + ic('arrow-right') + '</button>' : '') +
+      '</div>';
+    const h = el('wiz-hint');
+    if (h) {
+      const hints = [
+        '第 ① 步：设定目录 / 过滤条件，点「扫描文件」载入列表，再勾选要修改的文件。页面初始不扫描任何文件。',
+        '第 ② 步：新增 / 修改 / 删除要写入的值（结构化 set / delete / insert 或文本 sed 替换）。双击文件行可预览源文件格式。',
+        '第 ③ 步：核对 diff 预览，点「应用」一次提交；一次 Ctrl+Z 可整体撤销。',
+      ];
+      h.innerHTML = ic('info') + '<span>' + esc(hints[S.step - 1] || hints[0]) + '</span>';
+    }
+  }
+  function applyStep() {
+    const shown = { 1: 'sec-scope', 2: 'sec-instructions', 3: 'sec-results' }[S.step] || 'sec-scope';
+    ['sec-instructions', 'sec-scope', 'sec-results'].forEach(function (id) {
+      const n = el(id); if (n) n.classList.toggle('wizard-hidden', shown !== id);
+    });
+  }
+
+  /* ── 0.1.2 双击文件预览 ─────────────────────────────────── */
+  function hidePreview() { const m = el('preview-modal'); if (m) m.hidden = true; }
+  function onFileContent(p) {
+    S.previewUri = p.uri || '';
+    const title = el('preview-title');
+    if (title) {
+      title.innerHTML = ic('file') + '<span class="pv-path">' + esc(p.path || p.uri || '') + '</span>' +
+        (p.ext ? '<span class="badge ext-badge">' + esc(p.ext) + '</span>' : '');
+    }
+    const tb = el('pv-toolbar');
+    if (tb) tb.innerHTML = ic('info') + '<span>源文件只读预览 · 用于定位要修改的值，不会改动文件</span>';
+    const body = el('preview-body');
+    const note = el('pv-note-inline');
+    if (note) note.innerHTML = '';
+    if (body) {
+      if (p.error) {
+        body.innerHTML = '<div class="pv-error">' + ic('warning') + ' ' + esc(p.error) + '</div>';
+      } else {
+        const lines = String(p.text || '').split('\n');
+        const shown = lines.slice(0, 1500);
+        let html = '<div class="pv-code">';
+        shown.forEach(function (ln, i) {
+          html += '<div class="pv-line"><span class="pv-no">' + (i + 1) +
+            '</span><span class="pv-text">' + esc(ln || ' ') + '</span></div>';
+        });
+        html += '</div>';
+        body.innerHTML = html;
+        if (note && (p.truncated || lines.length > shown.length)) {
+          note.innerHTML = ic('warning') + ' 内容已截断，仅显示前 ' + shown.length + ' 行';
+        }
+      }
+    }
+    const m = el('preview-modal');
+    if (m) { m.hidden = false; const b = m.querySelector('[data-action="preview-close"]'); if (b) b.focus(); }
+  }
+
   function renderBottomBar() {
     const bb = el('bottombar');
     if (S.review.active) {
@@ -987,12 +1124,12 @@
     }
     const n = S.counts.changes || 0, f = S.counts.files || 0;
     const sel = selectedUris().length;
-    const disabled = sel === 0 || S.phase === 'applying';
+    const disabled = sel === 0 || S.phase === 'applying' || S.step !== 3;
     bb.innerHTML =
       '<div class="bb-stats">变更 <span class="bb-n">' + n + '</span> · 文件 <span class="bb-n">' + f + '</span> · 已选 <span class="bb-n">' + sel + '</span></div>' +
       '<div class="bb-actions">' +
       '<button type="button" class="btn btn-sec" data-action="preview-all">' + ic('preview') + ' 预览全部 Diff</button>' +
-      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (disabled ? '请先选择文件范围或等待应用完成' : '应用变更') + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
+      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '应用变更')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
       '</div>' +
       '<div class="bb-hint">' + ic('info') + ' 一次 Ctrl+Z 整体撤销</div>';
   }
@@ -1052,6 +1189,8 @@
     renderResults();
     renderReview();
     renderBottomBar();
+    renderWizard();
+    applyStep();
     applyDisabled();
   }
 
@@ -1067,6 +1206,7 @@
     S.equivalentGlob = Array.isArray(p.equivalentGlob) ? p.equivalentGlob : [];
     S.tree = Array.isArray(p.tree) ? p.tree : [];
     S.flat = Array.isArray(p.flat) ? p.flat : [];
+    bumpFlatVersion();
     S.counts = p.counts || zeroCounts();
     S.phase = p.phase || 'input';
     S.customSelection = (S.selection.overrides.add.length + S.selection.overrides.remove.length) > 0;
@@ -1080,18 +1220,20 @@
     renderAll();
   }
   function onTree(p) {
+    if (!S.hasInit) return; // 初次扫描的 tree 早于 init 时丢弃，避免用空指令渲染
     if (Array.isArray(p.tree)) S.tree = p.tree;
     if (Array.isArray(p.flat)) S.flat = p.flat;
+    bumpFlatVersion();
     if (p.counts) S.counts = p.counts;
     if (p.candidateExtensions) S.candidateExtensions = p.candidateExtensions;
     if (Array.isArray(p.equivalentGlob)) S.equivalentGlob = p.equivalentGlob;
-    renderOverview(); renderScopePreserve(); renderResults(); renderBottomBar(); applyDisabled();
+    renderOverview(); renderScopePreserve(); renderResults(); renderBottomBar(); renderWizard(); applyDisabled();
   }
   function onState(p) {
     S.phase = p.phase || S.phase;
     if (p.counts) S.counts = p.counts;
     if (p.message) toast(p.message);
-    renderOverview(); renderBottomBar(); applyDisabled();
+    renderOverview(); renderBottomBar(); renderWizard(); applyDisabled();
   }
   function onPreview(p) {
     S.diffs = Array.isArray(p.diffs) ? p.diffs : [];
@@ -1121,6 +1263,7 @@
       case 'review': onReview(m.payload); break;
       case 'report': onReport(m.payload); break;
       case 'error': onError(m.payload); break;
+      case 'fileContent': onFileContent(m.payload); break;
     }
   });
 
@@ -1205,11 +1348,27 @@
   function closeDirMenu() { const m = el('dir-menu'); if (m) m.remove(); }
 
   function onClick(e) {
+    // 远程桌面 / VNC 常不派发 dblclick；用第二次 click 的 detail===2 兜底触发预览。
+    if (e.detail === 2) {
+      const prow = previewTargetFrom(e);
+      if (prow) { e.preventDefault(); openPreviewFor(prow); return; }
+    }
     const t = e.target.closest ? e.target.closest('[data-action]') : null;
     if (!t) { closeDirMenu(); return; }
     if (t.getAttribute('aria-disabled') === 'true') { e.preventDefault(); return; }
     const a = t.getAttribute('data-action');
     switch (a) {
+      case 'wizard-step': {
+        const st = parseInt(t.getAttribute('data-step'), 10);
+        S.step = (st >= 1 && st <= 3) ? st : 1;
+        renderWizard(); applyStep(); renderBottomBar(); applyDisabled();
+        announce('已进入第 ' + S.step + ' 步：' + STEPS[S.step - 1].label);
+        break;
+      }
+      case 'scan-files': post({ type: 'scan' }); toast('已发出扫描请求，正在按当前范围载入文件列表'); break;
+      case 'preview-close': hidePreview(); break;
+      case 'preview-open-editor': if (S.previewUri) post({ type: 'openFile', uri: S.previewUri }); break;
+
       case 'import': post({ type: 'importExpressionSet' }); break;
       case 'export': post({ type: 'exportExpressionSet', data: buildExpressionSet() }); toast('已发出导出请求'); break;
       case 'history': post({ type: 'showReport' }); break;
@@ -1444,6 +1603,11 @@
     }
   }
   function onKeyDown(e) {
+    const pv = el('preview-modal');
+    if (pv && !pv.hidden) {
+      if (e.key === 'Escape') { e.preventDefault(); hidePreview(); }
+      return;
+    }
     if (!el('confirm-modal').hidden) {
       if (e.key === 'Escape') { e.preventDefault(); hideConfirm(); }
       return;
@@ -1473,7 +1637,30 @@
     }
   }
 
+  /** 文件行双击 → 只读预览源文件（不改动文件、不影响单击勾选）。 */
+  let lastPreviewPath = '', lastPreviewAt = 0;
+  function openPreviewFor(row) {
+    const path = row.getAttribute('data-path'); if (!path) return;
+    const now = Date.now();
+    // dblclick 与 click(detail===2) 兜底可能各触发一次，400ms 内同文件只发一次。
+    if (path === lastPreviewPath && now - lastPreviewAt < 400) return;
+    lastPreviewPath = path; lastPreviewAt = now;
+    const f = flatByPath[path];
+    const uri = (f && f.uri) ? f.uri : path;
+    post({ type: 'previewFile', uri: uri, path: path });
+  }
+  function previewTargetFrom(e) {
+    if (!e.target.closest) return null;
+    if (e.target.closest('[data-action]')) return null;      // 勾选框/按钮双击不触发
+    return e.target.closest('.tree-row.is-file');
+  }
+  function onDblClick(e) {
+    const row = previewTargetFrom(e);
+    if (row) { e.preventDefault(); openPreviewFor(row); }
+  }
+
   document.addEventListener('click', onClick);
+  document.addEventListener('dblclick', onDblClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
   document.addEventListener('focusin', onFocusIn);

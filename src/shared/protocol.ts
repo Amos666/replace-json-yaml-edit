@@ -86,6 +86,16 @@ export interface SerializedSelection {
   overrides: { add: string[]; remove: string[] };
 }
 
+/** 双击文件行的源文件预览载荷（宿主读盘后回发，含大小截断保护） */
+export interface FileContentPayload {
+  uri: string;
+  path: string;
+  ext: string;
+  text: string;
+  truncated: boolean;
+  error?: string;
+}
+
 export interface ReviewItem {
   uri: string;
   path: string;
@@ -141,7 +151,8 @@ export type HostToWebview =
   | { type: 'preview'; payload: { diffs: FileDiff[] } }
   | { type: 'review'; payload: ReviewPayload }
   | { type: 'report'; payload: ReportPayload }
-  | { type: 'error'; payload: { message: string; detail?: string } };
+  | { type: 'error'; payload: { message: string; detail?: string } }
+  | { type: 'fileContent'; payload: FileContentPayload };
 
 export type BatchOp =
   | 'selectAll'
@@ -178,6 +189,7 @@ export type WebviewToHost =
   | { type: 'previewAll' }
   | { type: 'apply'; uris: string[]; confirmed: boolean }
   | { type: 'openFile'; uri: string; line?: number }
+  | { type: 'previewFile'; uri: string; path: string }
   | { type: 'importExpressionSet' }
   | { type: 'exportExpressionSet'; data: unknown }
   | { type: 'exportReport' }

@@ -20,6 +20,7 @@ export const EXPRESSION_SET_VERSION = 3 as const;
 export interface HostConfig {
   maxMatches: number;
   maxFileSizeMB: number;
+  maxFiles: number;
   defaultExclude: string[];
 }
 
@@ -82,6 +83,8 @@ export interface HostState {
   lastReport: ReportPayload | null;
   scanSkipped: SkipItem[];
   scanConflicts: ConflictItem[];
+  /** findFiles 达到上限，文件列表可能被截断（仅用于宿主提示，不进入协议）。 */
+  listTruncated: boolean;
 }
 
 /** 表达式集规范形态（附录 A，version 3）。 */

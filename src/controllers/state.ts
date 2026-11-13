@@ -1,7 +1,7 @@
 /** 宿主状态初始化、序列化与表达式集应用（纯逻辑，不触碰 vscode）。 */
 
 import { createSelection, parseTreeFilter, scopeToGlob, toGlobSummary } from '../core/index.ts';
-import type { SelectionState } from '../core/types.ts';
+import type { Instruction, SelectionState } from '../core/types.ts';
 import type { InitPayload, SerializedSelection, TreePayload } from '../shared/protocol.ts';
 import {
   DISPLAY_NAME, EXPRESSION_SET_VERSION,
@@ -37,6 +37,7 @@ export function createInitialState(): HostState {
     lastReport: null,
     scanSkipped: [],
     scanConflicts: [],
+    listTruncated: false,
   };
 }
 
@@ -51,6 +52,47 @@ export function serializeSelection(sel: SelectionState): SerializedSelection {
       remove: [...sel.overrides.remove],
     },
   };
+}
+
+/**
+ * 第 1 层只拉取「当前启用指令可能适用」的文件，避免在超大仓库里遍历全部文件。
+ * 返回 VS Code findFiles 的 include glob；没有任何可用指令时返回空串（调用方应跳过扫描）。
+ *
+ * 纯逻辑（不接触 vscode），便于单测覆盖收窄规则。
+ */
+export function searchIncludeGlob(instructions: Instruction[]): string {
+  const enabled = instructions.filter((i) => i.enabled);
+  if (!enabled.length) return '';
+  const scopes = enabled.map((i) => i.fileScope);
+  // all / 空 include 的 custom 都表示「全部文件类型」，无法再收窄。
+  if (scopes.some((s) => s.mode === 'all')) return '**/*';
+  if (scopes.some((s) => s.mode === 'custom' && (s.include?.length ?? 0) === 0)) return '**/*';
+
+  const globs = new Set<string>();
+  const exts = new Set<string>();
+  const addNamed = (entry: string): void => {
+    const e = entry.trim();
+    if (!e) return;
+    if (/[*?/]/.test(e)) globs.add(e.startsWith('**/') ? e : `**/${e}`);
+    else if (e.includes('.')) globs.add(`**/${e}`);
+    else {
+      // 无点条目既可能是扩展名（py），也可能是无扩展名文件名（Dockerfile）：两种都收。
+      exts.add(e.replace(/^\./, ''));
+      globs.add(`**/${e}`);
+    }
+  };
+
+  for (const scope of scopes) {
+    if (scope.mode === 'fixed') {
+      globs.add(scopeToGlob(scope)[0]);
+    } else if (scope.mode === 'custom') {
+      for (const e of scope.include ?? []) addNamed(e);
+    }
+  }
+  if (exts.size) globs.add(`**/*.{${[...exts].join(',')}}`);
+  if (!globs.size) return '**/*';
+  const list = [...globs];
+  return list.length === 1 ? list[0] : `{${list.join(',')}}`;
 }
 
 /**

@@ -227,7 +227,17 @@ input[type="checkbox"] { accent-color: var(--c-btn-bg); width: 14px; height: 14p
   user-select: none;
 }
 .tri .codicon { font-size: 11px; }
-.tri[aria-checked="true"] { background: var(--c-check-bg); }
+.tri[aria-checked="true"] {
+  background: var(--c-check-bg);
+  border-color: var(--c-focus);
+}
+.tri[aria-checked="true"]::after {
+  content: "\eab2";              /* codicon-check */
+  font-family: "codicon";
+  font-size: 12px; line-height: 1;
+  color: var(--c-check-fg);
+}
+.tri[aria-checked="mixed"]::after { background: var(--c-check-fg); }
 .tri[aria-checked="mixed"]::after {
   content: ""; width: 7px; height: 2px; background: var(--c-check-fg); border-radius: 1px;
 }
@@ -523,6 +533,12 @@ input.filter-input { width: 100%; padding-left: 24px; }
 .tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.92em; }
 .tree-label.flat-path { font-family: var(--font-code); }
 .hit { color: var(--c-hit); background: transparent; text-decoration: underline; text-underline-offset: 2px; }
+.tree-truncated {
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 8px; color: var(--c-muted); font-size: 0.85em;
+  border-top: 1px solid var(--c-border);
+}
+.tree-truncated .codicon { flex: none; }
 .row-badge { flex: none; }
 .row-badge .badge { min-height: 15px; }
 .row-actions { display: flex; gap: 2px; flex: none; }
@@ -832,4 +848,116 @@ body.vscode-high-contrast-light .group-item:hover { border: 1px solid var(--vsco
 @media (prefers-reduced-motion: reduce) {
   :root { --t: 0s; }
   *, *::before, *::after { animation-duration: 0s; animation-iteration-count: 1; transition-duration: 0s; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+ * 0.1.2 三步向导 / 源文件预览 / 视觉优化
+ * 全部走 --c-* 别名（映射到官方 --vscode-*），无硬编码颜色
+ * ═══════════════════════════════════════════════════════════ */
+
+/* ── 三步向导步骤条 ─────────────────────────────────────── */
+.wizard {
+  display: flex; align-items: center; gap: var(--sp-1);
+  padding: 6px var(--sp-2);
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-bg-1);
+  flex: none; flex-wrap: wrap;
+}
+.wiz-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 24px; padding: 0 10px;
+  border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+  background: transparent; color: var(--c-muted);
+  font-size: 0.88em; cursor: pointer;
+  transition: background var(--t), color var(--t), border-color var(--t);
+}
+.wiz-step:hover { background: var(--c-hover); border-color: var(--c-wborder); }
+.wiz-step[aria-current="step"] {
+  background: var(--c-btn-bg); color: var(--c-btn-fg);
+  border-color: var(--c-btn-border); font-weight: 600;
+}
+.wiz-step .wiz-n {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 1px solid currentColor; font-size: 0.78em; font-variant-numeric: tabular-nums;
+}
+.wiz-sep { color: var(--c-disabled); font-size: 0.8em; flex: none; }
+.wiz-actions { margin-left: auto; display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.wiz-hint {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px var(--sp-2); color: var(--c-muted); font-size: 0.85em;
+  border-bottom: 1px solid var(--c-border); background: var(--c-bg-2); flex: none;
+}
+.wiz-hint .codicon { flex: none; }
+/* 步骤显隐：只作用于 content 直属区块，避免 !important */
+.content > .section.wizard-hidden { display: none; }
+
+/* ── 源文件预览弹框 ─────────────────────────────────────── */
+/* 历史 bug：.modal-backdrop 的 display:flex 会盖掉 hidden 属性 UA 样式，必须显式压回 */
+#preview-modal[hidden] { display: none; }
+.preview-title { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.pv-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-code); font-size: 0.9em; }
+.preview-modal { width: min(820px, 100%); max-height: 84%; display: flex; flex-direction: column; }
+.preview-body { padding: 0; overflow: auto; max-height: 64vh; flex: 1; }
+.pv-toolbar {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 5px var(--sp-2); border-bottom: 1px solid var(--c-border);
+  color: var(--c-muted); font-size: 0.82em; flex: none;
+}
+.pv-code {
+  font-family: var(--font-code); font-size: 0.9em;
+  padding: 6px 0; background: var(--c-code-bg);
+}
+.pv-line { display: flex; align-items: flex-start; min-height: 18px; }
+.pv-no {
+  flex: none; width: 48px; padding: 0 8px 0 4px; text-align: right;
+  color: var(--c-disabled); border-right: 1px solid var(--c-border);
+  user-select: none; font-variant-numeric: tabular-nums;
+}
+.pv-text { flex: 1; min-width: 0; padding: 0 10px; white-space: pre-wrap; word-break: break-all; }
+.pv-note {
+  padding: 6px var(--sp-2); color: var(--c-warn);
+  border-top: 1px solid var(--c-border); font-size: 0.85em;
+}
+.pv-error { padding: var(--sp-3); color: var(--c-error); }
+.pv-open-row { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); }
+
+/* ── 视觉优化：更清晰的层级与对齐，保持高密度工具感 ─────── */
+.app { outline: none; }
+.toolbar { min-height: 36px; padding: 0 var(--sp-3); }
+.tb-title { gap: 8px; font-size: 1em; }
+.tb-title .codicon { font-size: 15px; }
+.overview { padding: 0 var(--sp-3); min-height: 32px; }
+.ov-stat { padding: 0 8px; }
+.content { padding: 0 var(--sp-2) var(--sp-2) var(--sp-2); }
+.content > .section { margin-top: var(--sp-2); border: 1px solid var(--c-border); border-radius: var(--radius); }
+.content > .section > .sec-head { padding: 0 var(--sp-3); min-height: 28px; }
+.sec-title { font-size: 0.8em; letter-spacing: 0.08em; }
+.sec-title::before {
+  content: ""; display: inline-block; width: 3px; height: 11px;
+  margin-right: 8px; vertical-align: -1px; border-radius: 1px;
+  background: var(--c-link);
+}
+.sec-body { padding: var(--sp-3); }
+.bottombar { padding: 6px var(--sp-3); min-height: 42px; }
+.state-skeleton { gap: 6px; }
+/* 树行的双击提示 */
+.tree-row.is-file { cursor: default; }
+.tree-row.is-file:hover { background: var(--c-hover); }
+.tree-row.is-file .tree-label { cursor: pointer; }
+/* HC 下所有新增层级显式边框 */
+body.vscode-high-contrast .wizard,
+body.vscode-high-contrast-light .wizard,
+body.vscode-high-contrast .wiz-hint,
+body.vscode-high-contrast-light .wiz-hint,
+body.vscode-high-contrast .content > .section,
+body.vscode-high-contrast-light .content > .section,
+body.vscode-high-contrast .wiz-step,
+body.vscode-high-contrast-light .wiz-step {
+  border: 1px solid var(--c-contrast);
+}
+body.vscode-high-contrast .tri[aria-checked="true"],
+body.vscode-high-contrast-light .tri[aria-checked="true"] {
+  border: 1px solid var(--c-contrast);
 }

@@ -182,3 +182,45 @@
   - 中文渲染正常无乱码；树勾选、`●2` 计数徽标、非候选灰显（app.yaml）与概览条/底栏计数均正确。
 - **发现并修复真实 UI bug**：确认弹窗 `.modal-backdrop` 的 `display:flex` 覆盖了 `hidden` 属性的 UA 样式，弹窗初始可见且 `hideConfirm()` 失效（关不掉）；补 `.modal-backdrop[hidden]{display:none}` 后复测通过。该问题靠静态检查与单元测试均无法发现。
 - **如实标注**：这是「截图核验」而非人眼目视走查；键盘焦点环目视、300px 窄宽度实测、四态全交互仍未覆盖。
+
+
+---
+
+## 九、0.1.2 宿主层联动改动（集成方）
+
+以下为配合本轮三步向导 / 懒加载 / 双击预览所做的**宿主层**变更，UI 侧只需按契约消费：
+
+- **懒加载**：`ready` 时宿主不再 `findFiles`、不再读盘，只下发空 `init`（`phase='input'`、`tree/flat=[]`）与一条 `state` 提示。用户设定目录/过滤条件并点「扫描文件」（`{type:'scan'}`）后，才执行唯一一次 `findFiles + runScan`。
+- **无指令也能列文件**：第①步「先选文件」时用户尚未写指令，`runScan` 在无启用指令时把所有文件视为 applicable 且**完全不读盘**，只产出文件树；第②步加指令后 `recomputePlans()` 只对已勾选文件重跑补丁。
+- **轻量重算**：勾选 / 筛选 / 指令编辑 / 批量操作改为 `scheduleRecompute()`（200ms 防抖，复用文本缓存，不重新拉目录）；只有显式 `scan`、表达式集导入、右键新增指令才 `refreshFiles:true`。
+- **范围收窄**：`refreshFileList` 现在同时接受用户设定的 `selection.baseInclude/baseExclude`（目录/glob）与启用指令的 `fileScope`；作用范围仍由 `matchScope` 逐文件裁决。
+- **双击预览协议**：新增 `WebviewToHost: {type:'previewFile', uri, path}` 与 `HostToWebview: {type:'fileContent', payload}`；宿主读盘前 `stat` 判大小，>2MB 只回 `error`，文本截断 128K 字符并置 `truncated`，已打开文档用 `getText()` 含未保存内容。
+- **侧边栏移除**：按用户要求删除 Activity Bar 容器/视图、`view/title` 菜单、`structedit.openSidebar` 命令、`Ctrl+Alt+R` 与备用 `Ctrl+Shift+Alt+B`；仅保留 `Ctrl+Alt+B` 打开编辑器 Tab 面板。集成测试已改为断言「不声明侧边栏 + 唯一快捷键」。
+
+### 验收（宿主侧，真实 VS Code 1.146.0）
+- `npm run compile` ✓ · 单测 61/61 ✓ · `xvfb-run -a npm run test:integration` **6/6 ✓**
+- 关键用例：无指令打开面板不触发 `findFiles`、有指令时 include 按 `fileScope` 收窄且 `maxFiles=5000`、多文件 `git diff` 仅目标行、一次 Ctrl+Z 全量逐字节还原、侧边栏声明全部移除。
+
+
+---
+
+## 十、0.1.2 UI 落地与截图验收（集成方兜底完成）
+
+> 说明：本轮按要求启动了 UI 专家子 Agent 并给出完整 brief（勾选对勾、视觉重构、三步向导、双击预览），但该 Agent 运行 12 分钟、3 次催办均无任何文件落盘与状态回报，判定失效。为不阻塞交付，由集成方按同一 brief 自行完成 `src/ui/panel.html` / `panel.css` / `panel.js` 的全部改动。以下为实际落地与真实验证结果。
+
+### 逐条需求落地
+1. **树勾选对勾**：`.tri[aria-checked="true"]::after` 用 `codicon-check`（`\eab2`）+ `font-family:"codicon"` 渲染对勾，并给选中态 `--c-focus` 描边；mixed 态保留横杠。实测：扫描 100 个文件后每行勾选框均显示清晰对勾（`docs/screenshots/int-02-after-scan.png`）。
+2. **侧边栏**：由宿主层移除（见第九节），UI 侧无需改动；面板为编辑器 Tab，唯一入口 `Ctrl+Alt+B`。
+3. **视觉重构**：新增步骤条、提示条、区块 1px 边框与圆角、`sec-title` 左侧语义色引导条、概览/底栏内边距与字号层级、树行 hover、HC 下所有新增层级的 `contrastBorder` 显式边框；全部走 `--c-*` 别名（官方 `--vscode-*`），零硬编码颜色。
+4. **三步向导**：`① 选择文件 → ② 编辑值 → ③ 预览并应用`，步骤条可点击跳转、上一步/下一步；仅当前步区块显示，状态不重置；①② 步「应用」按钮禁用并给出 tooltip；① 步提供「扫描文件」主按钮（`{type:'scan'}`）。
+5. **双击预览**：文件行双击（原生 `dblclick` + `click detail===2` 兜底，400ms 去重）发 `{type:'previewFile'}`，监听 `{type:'fileContent'}` 渲染只读弹框：路径+扩展名徽标、行号、等宽源码、`truncated`/`error` 态、「在编辑器中打开」「关闭」、Esc 关闭、焦点回到关闭按钮。弹框初始 `hidden` 且带 `#preview-modal[hidden]{display:none}`，规避历史 `display:flex` 覆盖 bug。
+
+### 截图验收（真实 VS Code 1.146.0，Xvfb + x11vnc + VNC 客户端）
+- `shot-panel-open.png` + 四张 `shot-theme-*.png`：步骤条可见、① 高亮、扫描按钮可见、**初始不扫描**（就绪 0/0、命中 0）、仅文件范围区块显示、无确认/预览弹窗残留、四主题（Dark/Light/HC/HC Light）均无白底/错色块/乱码、HC 有显式边框。
+- `int-02-after-scan.png`：在 `test/testdata`（100 个同结构文件）点「扫描文件」→ 命中 100 / 已选 100、**对勾全部可见**、概览「就绪 0/100」证明只列文件未读盘。
+- `int-03-preview-modal.png`：双击 `app-012-xle8.json` → 弹框显示路径、JSON 徽标、22 行带行号源码、只读说明与操作按钮，遮罩与居中正确。
+
+### 自检
+- `node --check src/ui/panel.js` ✓ · `npm run compile` ✓ · 单测 61/61 ✓ · 真实 VS Code 集成测试 **6/6** ✓ · `npm run package` 15 文件 / 213 KB ✓
+- `grep -E "#hex|rgb(|hsl("` 在 `src/ui/**` 无残留 ✓ · 无外部网络资源 ✓ · 无 `StructEdit` 字样 ✓
+- 仍未覆盖（如实标注）：键盘焦点环目视、300px 窄宽度实测、三步向导「② 编辑值 → ③ 应用」端到端手工冒烟。

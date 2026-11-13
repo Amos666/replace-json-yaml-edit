@@ -1,4 +1,5 @@
-/** VS Code 扩展入口：注册附录 B 的 7 个命令，宿主逻辑全部委托 PanelController。 */
+/** VS Code 扩展入口：注册附录 B 的命令，宿主逻辑全部委托 PanelController。
+ * 仅提供编辑器 Tab 面板，由 Ctrl+Alt+B 启动（不注册侧边栏视图）。 */
 
 import * as vscode from 'vscode';
 import { PanelController } from './controllers/controller.ts';

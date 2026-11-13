@@ -47,6 +47,10 @@
     </div>
   </section>
 
+  <!-- ── 三步向导步骤条（0.1.2） ───────────────────────────── -->
+  <nav class="wizard" id="wizard" aria-label="操作步骤"></nav>
+  <div class="wiz-hint" id="wiz-hint"></div>
+
   <!-- ── Global error strip ────────────────────────────────── -->
   <div class="error-strip" id="error-strip" role="alert" hidden></div>
 
@@ -111,6 +115,22 @@
 
   <!-- ── Sticky bottom bar ─────────────────────────────────── -->
   <footer class="bottombar" id="bottombar"></footer>
+
+  <!-- ── 双击文件：源文件预览弹框（0.1.2） ────────────────── -->
+  <div class="modal-backdrop" id="preview-modal" hidden>
+    <div class="modal preview-modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <h3 class="modal-title preview-title" id="preview-title"></h3>
+      <div class="pv-toolbar" id="pv-toolbar"></div>
+      <div class="modal-body preview-body" id="preview-body"></div>
+      <div class="modal-actions pv-open-row">
+        <span class="pv-note-inline" id="pv-note-inline"></span>
+        <span>
+          <button type="button" class="btn btn-sec" data-action="preview-close" aria-label="关闭预览">关闭</button>
+          <button type="button" class="btn btn-primary" data-action="preview-open-editor">在编辑器中打开</button>
+        </span>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Confirmation dialog ───────────────────────────────── -->
   <div class="modal-backdrop" id="confirm-modal" hidden>

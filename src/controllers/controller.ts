@@ -1,6 +1,6 @@
 /**
  * 宿主层总控：WebviewPanel 生命周期、§8.2 状态机、onDidReceiveMessage 全消息分发、
- * 300ms 防抖重扫、扫描取消、7 个命令（附录 B）。
+ * 懒加载扫描（首屏不扫描）、轻量重算、扫描取消、命令（附录 B）。
  *
  * 所有写回必须走 workspace.applyEdit(WorkspaceEdit)（§4.4 原则 2），由 apply.ts 完成。
  * 协议约定：selectAllMatches / sequentialReview 以 { type:'command', command } 转发给面板，
@@ -9,7 +9,7 @@
 
 import * as vscode from 'vscode';
 import {
-  applyBatch, clearOverrides, matchTreeFilter, parseTreeFilter, pathToString,
+  applyBatch, clearOverrides, extOf, matchTreeFilter, parseTreeFilter, pathToString,
   resetToGlob, reviewQueue, reviewStep, setSelected,
 } from '../core/index.ts';
 import type { FileScope, Instruction } from '../core/types.ts';
@@ -45,6 +45,13 @@ interface ScanOptions {
   sendInit: boolean;
 }
 
+interface WebviewClient {
+  webview: vscode.Webview;
+  ready: boolean;
+  queue: Array<() => void>;
+  disposables: vscode.Disposable[];
+}
+
 export class PanelController {
   private readonly context: vscode.ExtensionContext;
   private readonly extensionUri: vscode.Uri;
@@ -52,8 +59,7 @@ export class PanelController {
   private readonly textCache = new Map<string, TextCacheEntry>();
 
   private panel: vscode.WebviewPanel | undefined;
-  private panelReady = false;
-  private readyQueue: Array<() => void> = [];
+  private readonly clients = new Set<WebviewClient>();
   private scanTimer: ReturnType<typeof setTimeout> | undefined;
   private filterTimer: ReturnType<typeof setTimeout> | undefined;
   private scanGeneration = 0;
@@ -66,17 +72,31 @@ export class PanelController {
 
   /* ── 消息发送 / 错误 ─────────────────────────────────────── */
 
-  private post(msg: HostToWebview): void {
-    void this.panel?.webview.postMessage(msg);
+  /** 广播给所有已就绪的 Webview；未就绪的客户端在 ready 时统一发 init。 */
+  private post(msg: HostToWebview): number {
+    let delivered = 0;
+    for (const client of this.clients) {
+      if (!client.ready) continue;
+      void client.webview.postMessage(msg);
+      delivered += 1;
+    }
+    return delivered;
+  }
+
+  private postTo(client: WebviewClient, msg: HostToWebview): void {
+    void client.webview.postMessage(msg);
   }
 
   /** 命令/消息统一错误出口：不静默吞掉，回发 {type:'error'}。 */
   postError(e: unknown): void {
     const err = e instanceof Error ? e : new Error(String(e));
-    this.post({
+    const delivered = this.post({
       type: 'error',
       payload: { message: err.message, detail: err.stack },
     });
+    if (!delivered) {
+      void vscode.window.showErrorMessage(`${DISPLAY_NAME}：${err.message}`);
+    }
   }
 
   private postState(phase: HostState['phase'], message?: string): void {
@@ -92,41 +112,61 @@ export class PanelController {
 
   /** 协议约定转发：HostToWebview 未定义 command 类型，UI 端忽略未知 type。 */
   private postCommand(command: string): void {
-    void this.panel?.webview.postMessage({ type: 'command', command });
+    this.post({ type: 'command', command } as unknown as HostToWebview);
   }
 
-  /* ── 面板生命周期 ───────────────────────────────────────── */
+  /* ── Webview 生命周期（编辑器面板 + 侧边栏视图共用） ─────── */
 
-  private async ensurePanel(): Promise<{ panel: vscode.WebviewPanel; created: boolean }> {
-    if (this.panel) return { panel: this.panel, created: false };
+  private attachWebview(webview: vscode.Webview): WebviewClient {
+    const client: WebviewClient = {
+      webview, ready: false, queue: [], disposables: [],
+    };
+    client.disposables.push(webview.onDidReceiveMessage((msg: WebviewToHost) => {
+      void this.onMessage(msg, client);
+    }));
+    this.clients.add(client);
+    return client;
+  }
+
+  private detachClient(client: WebviewClient): void {
+    client.ready = false;
+    client.queue = [];
+    for (const d of client.disposables.splice(0)) d.dispose();
+    this.clients.delete(client);
+    this.panel = undefined;
+    // 面板关闭时停止扫描并释放缓存。
+    if (this.clients.size === 0) {
+      this.cancelScan();
+      this.textCache.clear();
+    }
+  }
+
+  private panelClient(): WebviewClient | undefined {
+    return this.clients.values().next().value as WebviewClient | undefined;
+  }
+
+  private async createPanelClient(): Promise<WebviewClient> {
+    const existing = this.panelClient();
+    if (existing) return existing;
     const panel = createPanel();
     this.panel = panel;
-
-    // 先注册消息/释放回调，再 setHtml（webview 在 setHtml 后才执行脚本并可能立即发 ready）。
-    panel.webview.onDidReceiveMessage(
-      (msg: WebviewToHost) => { void this.onMessage(msg); },
-      undefined,
-      this.context.subscriptions,
-    );
-    panel.onDidDispose(
-      () => {
-        this.panel = undefined;
-        this.panelReady = false;
-        this.readyQueue = [];
-        this.cancelScan();
-        this.textCache.clear();
-      },
-      undefined,
-      this.context.subscriptions,
-    );
+    const client = this.attachWebview(panel.webview);
+    panel.onDidDispose(() => this.detachClient(client), undefined, this.context.subscriptions);
     this.context.subscriptions.push(panel);
     panel.webview.html = await buildHtml(panel.webview, this.extensionUri);
-    return { panel, created: true };
+    return client;
   }
 
-  private afterReady(fn: () => void): void {
-    if (this.panelReady) fn();
-    else this.readyQueue.push(fn);
+  /** 命令入口：复用已打开的编辑器面板，否则新建。 */
+  private async ensureClient(): Promise<{ client: WebviewClient; created: boolean }> {
+    const panel = this.panelClient();
+    if (panel) { this.panel?.reveal(); return { client: panel, created: false }; }
+    return { client: await this.createPanelClient(), created: true };
+  }
+
+  private waitReady(client: WebviewClient): Promise<void> {
+    if (client.ready) return Promise.resolve();
+    return new Promise<void>((resolve) => { client.queue.push(resolve); });
   }
 
   /* ── 扫描：防抖 / 取消 / 进度 ───────────────────────────── */
@@ -140,11 +180,38 @@ export class PanelController {
     this.scanCts = undefined;
   }
 
-  private scheduleRescan(delay = 300): void {
+  /**
+   * 轻量重算（默认路径）：不 findFiles、不重复读盘（复用文本缓存），
+   * 只对已加载的文件列表重跑「指令 → 补丁」。勾选 / 筛选 / 指令编辑都走这里，
+   * 避免超大仓库里每次点击都全量扫描。
+   */
+  private async recomputePlans(): Promise<void> {
+    if (!this.state.entries.length) {
+      this.postState('input', '请先在「① 选择文件」点「扫描文件」载入文件列表。');
+      return;
+    }
+    const cfg = readConfig();
+    const gen = ++this.scanGeneration;
+    const cancelled = (): boolean => gen !== this.scanGeneration;
+    try {
+      await runScan(this.state, cfg, this.textCache, cancelled);
+      if (cancelled()) return;
+      this.state.phase = 'results';
+      this.postTree();
+      this.postState('results');
+    } catch (e) {
+      if (e instanceof ScanCancelledError || cancelled()) return;
+      this.state.phase = 'results';
+      this.postError(e);
+      this.postState('results');
+    }
+  }
+
+  private scheduleRecompute(delay = 200): void {
     if (this.scanTimer) clearTimeout(this.scanTimer);
     this.scanTimer = setTimeout(() => {
       this.scanTimer = undefined;
-      void this.doScan({ refreshFiles: false, clearCache: false, sendInit: false });
+      void this.recomputePlans();
     }, delay);
   }
 
@@ -157,7 +224,7 @@ export class PanelController {
     }, 150);
   }
 
-  /** 一次完整扫描：findFiles（可选）→ runScan → init/tree + state，含进度与取消。 */
+  /** 显式扫描：用户点「扫描文件」→ findFiles → runScan → tree/state，含进度与取消。 */
   private async doScan(opts: ScanOptions): Promise<void> {
     // 取消仍在进行的扫描（generation + findFiles token），避免旧结果覆盖新状态。
     this.scanCts?.cancel();
@@ -167,6 +234,12 @@ export class PanelController {
     const cancelled = (): boolean => gen !== this.scanGeneration;
 
     const cfg = readConfig();
+    // 没有文件列表且不是显式刷新 → 无效扫描，直接提示（页面首屏完全不扫描）。
+    if (!opts.refreshFiles && this.state.entries.length === 0) {
+      this.postState('input', '请先在「① 选择文件」设定范围并点「扫描文件」。');
+      return;
+    }
+
     this.state.phase = 'scanning';
     this.post({
       type: 'state',
@@ -177,7 +250,7 @@ export class PanelController {
     });
 
     try {
-      if (opts.refreshFiles || this.state.entries.length === 0) {
+      if (opts.refreshFiles) {
         const cts = new vscode.CancellationTokenSource();
         this.scanCts = cts;
         await refreshFileList(this.state, cfg, cts.token);
@@ -197,11 +270,15 @@ export class PanelController {
       if (cancelled()) return;
 
       this.state.phase = 'results';
+      const truncMsg = this.state.listTruncated
+        ? `文件数已达到上限 ${cfg.maxFiles}，列表可能不完整；请用筛选条件缩小范围，或在设置中调高 batchReplace.maxFiles。`
+        : undefined;
       if (opts.sendInit) {
         this.post({ type: 'init', payload: toInitPayload(this.state) });
+        if (truncMsg) this.postState('results', truncMsg);
       } else {
         this.postTree();
-        this.postState('results');
+        this.postState('results', truncMsg);
       }
     } catch (e) {
       if (e instanceof ScanCancelledError || cancelled()) return;
@@ -228,14 +305,26 @@ export class PanelController {
 
   /* ── onDidReceiveMessage 全消息分发 ─────────────────────── */
 
-  private async onMessage(msg: WebviewToHost): Promise<void> {
+  private async onMessage(msg: WebviewToHost, client: WebviewClient): Promise<void> {
     try {
       switch (msg.type) {
-        case 'ready':
-          await this.doScan({ refreshFiles: true, clearCache: true, sendInit: true });
-          this.panelReady = true;
-          for (const fn of this.readyQueue.splice(0)) fn();
+        case 'ready': {
+          if (client.ready) return;
+          client.ready = true;
+          // 懒加载：首屏绝不 findFiles / 读盘，只下发空 init + input 态提示。
+          // 用户设定目录与过滤条件后，由「扫描文件」按钮的 scan 消息触发唯一一次扫描。
+          this.postTo(client, { type: 'init', payload: toInitPayload(this.state) });
+          this.postTo(client, {
+            type: 'state',
+            payload: {
+              phase: 'input',
+              counts: this.state.counts,
+              message: '页面已就绪，尚未扫描任何文件。请在「① 选择文件」设定范围后点「扫描文件」。',
+            },
+          });
+          for (const fn of client.queue.splice(0)) fn();
           break;
+        }
         case 'setInstructions': this.onSetInstructions(msg.instructions); break;
         case 'setFilter': this.onSetFilter(msg.raw, msg.view); break;
         case 'setScope': this.onSetScope(msg.instructionId, msg.scope); break;
@@ -252,6 +341,7 @@ export class PanelController {
           break;
         case 'apply': await this.onApply(msg.uris, msg.confirmed); break;
         case 'openFile': await this.onOpenFile(msg.uri, msg.line); break;
+        case 'previewFile': await this.onPreviewFile(msg.uri, msg.path); break;
         case 'importExpressionSet': await this.onImport(); break;
         case 'exportExpressionSet': await this.onExport(msg.data); break;
         case 'exportReport': await exportReport(this.state); break;
@@ -266,26 +356,26 @@ export class PanelController {
 
   private onSetInstructions(instructions: Instruction[]): void {
     this.state.instructions = instructions.map((i) => ({ ...i }));
-    this.scheduleRescan(); // 指令变化 300ms 防抖重扫
+    this.scheduleRecompute(); // 指令变化：只对已加载列表轻量重算
   }
 
   private onSetScope(instructionId: string, scope: FileScope): void {
     const ins = this.state.instructions.find((i) => i.id === instructionId);
     if (!ins) return;
     ins.fileScope = scope;
-    this.scheduleRescan(); // 扩展名策略变化触发重扫
+    this.scheduleRecompute(); // 扩展名策略变化：轻量重算补丁
   }
 
   private onSelect(uri: string, checked: boolean): void {
     setSelected(this.relOf(uri), checked, this.state.selection);
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
-    this.scheduleRescan();
+    this.scheduleRecompute();
   }
 
   private onSelectFolder(checked: boolean, visibleUris: string[]): void {
     for (const u of visibleUris) setSelected(this.relOf(u), checked, this.state.selection);
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
-    this.scheduleRescan();
+    this.scheduleRecompute();
   }
 
   /** §6.4 批量操作只作用于命中集 H 并写回 overrides。 */
@@ -321,7 +411,7 @@ export class PanelController {
         return;
     }
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
-    this.scheduleRescan();
+    this.scheduleRecompute();
   }
 
   private onSetFilter(raw: string, view: 'tree' | 'flat'): void {
@@ -337,13 +427,15 @@ export class PanelController {
     resetToGlob(this.state.selection, include, exclude);
     this.state.selection.treeFilter = this.state.filter;
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
-    this.scheduleRescan();
+    this.scheduleRecompute();
+    this.postState(this.state.phase, '文件范围已更新；点「扫描文件」可按新范围重新载入列表。');
   }
 
   private onResetToGlob(): void {
     clearOverrides(this.state.selection);
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
-    this.scheduleRescan();
+    this.scheduleRecompute();
+    this.postState(this.state.phase, '已重置为 glob；点「扫描文件」可重新载入列表。');
   }
 
   /* ── 逐个审阅 §6.4 ─────────────────────────────────────── */
@@ -364,7 +456,7 @@ export class PanelController {
     this.state.review = { active: step.active, index: step.index, queue: this.state.review.queue };
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
     this.postReview();
-    this.scheduleRescan(); // 每步即时写 overrides，与 glob 双向同步
+    this.scheduleRecompute(); // 每步即时写 overrides，与 glob 双向同步
   }
 
   private postReview(message?: string): void {
@@ -425,6 +517,49 @@ export class PanelController {
 
   /* ── 其余 Webview 消息 ─────────────────────────────────── */
 
+  /** 双击文件行：只读预览源文件（带大小/截断保护），不改文件、不触发扫描。 */
+  private async onPreviewFile(uriOrPath: string, relPath: string): Promise<void> {
+    const uriStr = this.uriOf(uriOrPath) || uriOrPath;
+    const ext = extOf(relPath || uriStr);
+    let text = '';
+    let truncated = false;
+    let error: string | undefined;
+    try {
+      const uri = vscode.Uri.parse(uriStr);
+      const st = await vscode.workspace.fs.stat(uri);
+      const MAX_BYTES = 2 * 1024 * 1024;
+      if (st.size > MAX_BYTES) {
+        error = `文件 ${(st.size / 1024 / 1024).toFixed(1)} MB 超过预览上限（2 MB），请用「在编辑器中打开」查看。`;
+      } else {
+        const open = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uriStr);
+        // 已打开的文档用 getText() 含未保存内容；fatal:false 避免非 UTF-8 直接抛错。
+        const full = open
+          ? open.getText()
+          : new TextDecoder('utf-8', { fatal: false }).decode(await vscode.workspace.fs.readFile(uri));
+        const LIMIT = 128 * 1024;
+        if (full.length > LIMIT) {
+          text = full.slice(0, LIMIT);
+          truncated = true;
+        } else {
+          text = full;
+        }
+      }
+    } catch (e) {
+      error = `读取失败：${(e as Error).message}`;
+    }
+    this.post({
+      type: 'fileContent',
+      payload: {
+        uri: uriStr,
+        path: relPath || uriStr,
+        ext,
+        text,
+        truncated,
+        ...(error ? { error } : {}),
+      },
+    });
+  }
+
   private async onOpenFile(uri: string, line?: number): Promise<void> {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri));
     const options: vscode.TextDocumentShowOptions = {};
@@ -465,21 +600,18 @@ export class PanelController {
 
   /* ── 7 个命令（附录 B） ────────────────────────────────── */
 
-  /** 把一条新指令并入会话：新面板由 ready 的扫描带出，已有面板重发 init 刷新指令区。 */
+  /** 把一条新指令并入会话：右键命令是显式用户动作，主动按新 fileScope 扫描一次。 */
   private async pushInstructionAndRefresh(ins: Instruction): Promise<void> {
     this.state.instructions.push(ins);
-    const { created } = await this.ensurePanel();
-    if (created) return;
-    this.afterReady(() => {
-      this.post({ type: 'init', payload: toInitPayload(this.state) });
-      void this.doScan({ refreshFiles: false, clearCache: false, sendInit: false });
-    });
+    const { client, created } = await this.ensureClient();
+    await this.waitReady(client);
+    await this.doScan({ refreshFiles: true, clearCache: false, sendInit: false });
+    if (!created) this.postTo(client, { type: 'init', payload: toInitPayload(this.state) });
   }
 
   async commandOpenPanel(): Promise<void> {
-    const { panel, created } = await this.ensurePanel();
-    panel.reveal();
-    if (!created) this.afterReady(() => this.post({ type: 'init', payload: toInitPayload(this.state) }));
+    if (this.panel) { this.panel.reveal(); return; }
+    await this.createPanelClient();
   }
 
   /** 编辑器右键：把光标处键名填入一条新的结构化指令（简化：取光标标识符为路径）。 */
@@ -559,7 +691,8 @@ export class PanelController {
     if (!result) return;
     applyExpressionSet(this.state, result.set);
     this.textCache.clear();
-    await this.ensurePanel();
+    const { client } = await this.ensureClient();
+    await this.waitReady(client);
     await this.doScan({ refreshFiles: true, clearCache: true, sendInit: true });
     const uris = this.state.flat.filter((f) => f.checked).map((f) => f.uri);
     if (!uris.length) {
@@ -570,28 +703,28 @@ export class PanelController {
   }
 
   async commandShowReport(): Promise<void> {
-    await this.ensurePanel();
-    this.afterReady(() => showReport((m) => this.post(m), this.state));
+    const { client } = await this.ensureClient();
+    await this.waitReady(client);
+    showReport((m) => this.post(m), this.state);
   }
 
   /** 后两者：转发 command 给面板（UI 忽略未知 type）+ 宿主侧真正执行。 */
   async commandSelectAllMatches(): Promise<void> {
-    await this.ensurePanel();
-    this.afterReady(() => {
-      this.postCommand('selectAllMatches');
-      const hits = this.hitRelPaths();
-      applyBatch(this.state.selection, hits, this.state.allRelPaths, 'selectAll');
-      this.state.equivalentGlob = buildEquivalentGlob(this.state);
-      this.postState(this.state.phase, `已全选 ${hits.length} 个命中文件`);
-      void this.doScan({ refreshFiles: false, clearCache: false, sendInit: false });
-    });
+    const { client } = await this.ensureClient();
+    await this.waitReady(client);
+    this.postCommand('selectAllMatches');
+    const hits = this.hitRelPaths();
+    applyBatch(this.state.selection, hits, this.state.allRelPaths, 'selectAll');
+    this.state.equivalentGlob = buildEquivalentGlob(this.state);
+    this.postState(this.state.phase, `已全选 ${hits.length} 个命中文件`);
+    this.scheduleRecompute();
   }
 
   async commandSequentialReview(): Promise<void> {
-    await this.ensurePanel();
-    this.afterReady(() => {
-      this.postCommand('sequentialReview');
-      this.onReview('start');
-    });
+    const { client } = await this.ensureClient();
+    await this.waitReady(client);
+    this.postCommand('sequentialReview');
+    this.onReview('start');
   }
 }
+
