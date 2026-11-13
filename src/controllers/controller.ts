@@ -16,7 +16,8 @@ import type { FileScope, Instruction } from '../core/types.ts';
 import type {
   BatchOp, HostToWebview, ReviewAction, ReviewPayload, WebviewToHost,
 } from '../shared/protocol.ts';
-import { applyChanges } from './apply.ts';
+import { applyChanges, restoreSnapshot } from './apply.ts';
+import type { SnapshotEntry } from './apply.ts';
 import { exportExpressionSet, importExpressionSet } from './expressionSet.ts';
 import { buildHtml, createPanel } from './html.ts';
 import { buildReport, exportReport, showReport } from './report.ts';
@@ -57,6 +58,8 @@ export class PanelController {
   private readonly extensionUri: vscode.Uri;
   private readonly state: HostState = createInitialState();
   private readonly textCache = new Map<string, TextCacheEntry>();
+  /** 上次应用的原文快照，供「一键回退」整体还原（每次应用覆盖，回退后清空）。 */
+  private lastSnapshot: SnapshotEntry[] = [];
 
   private panel: vscode.WebviewPanel | undefined;
   private readonly clients = new Set<WebviewClient>();
@@ -339,6 +342,10 @@ export class PanelController {
               message: '页面已就绪，尚未扫描任何文件。请在「① 选择文件」设定范围后点「扫描文件」。',
             },
           });
+          this.postTo(client, {
+            type: 'undoState',
+            payload: { available: this.lastSnapshot.length > 0, files: this.lastSnapshot.length },
+          });
           for (const fn of client.queue.splice(0)) fn();
           break;
         }
@@ -364,6 +371,7 @@ export class PanelController {
           await this.flushRecompute();
           await this.onApply(msg.uris);
           break;
+        case 'undoLast': await this.onUndoLast(); break;
         case 'openFile': await this.onOpenFile(msg.uri, msg.line); break;
         case 'previewFile': await this.onPreviewFile(msg.uri, msg.path); break;
         case 'importExpressionSet': await this.onImport(); break;
@@ -554,12 +562,24 @@ export class PanelController {
     try {
       const cfg = readConfig();
       const result = await applyChanges(this.state, cfg, uris);
+      // 记录原文快照：一键回退用它整文件还原（0.1.5 反馈：Ctrl+Z 无法跨文件整体撤销）。
+      this.lastSnapshot = result.snapshot;
       const report = buildReport(this.state, result.appliedUris, result.changes, result.hashSkips);
       this.state.lastReport = report;
       this.textCache.clear(); // 文件已变更，缓存失效
       this.state.phase = 'report';
       this.post({ type: 'report', payload: report });
-      const toast = `已修改 ${result.appliedUris.length} 个文件 · ${result.changes} 处变更`;
+      this.post({
+        type: 'undoState',
+        payload: { available: this.lastSnapshot.length > 0, files: this.lastSnapshot.length },
+      });
+      let toast = `已修改 ${result.appliedUris.length} 个文件 · ${result.changes} 处变更（已保存）`;
+      if (result.saveFailures.length) {
+        toast += `；${result.saveFailures.length} 个文件保存失败`;
+        void vscode.window.showWarningMessage(
+          `${DISPLAY_NAME}：部分文件保存失败：${result.saveFailures.join('；')}`,
+        );
+      }
       this.postState('report', toast);
       void vscode.window.showInformationMessage(`${DISPLAY_NAME}：${toast}`);
     } catch (e) {
@@ -567,6 +587,44 @@ export class PanelController {
       this.postError(e);
       this.postState('results');
     }
+  }
+
+  /** 一键回退：整体还原上次应用过的全部文件并立即保存（0.1.5）。 */
+  private async onUndoLast(): Promise<void> {
+    if (this.lastSnapshot.length === 0) {
+      this.postState(this.state.phase, '没有可回退的批量修改。');
+      void vscode.window.showInformationMessage(`${DISPLAY_NAME}：没有可回退的批量修改。`);
+      return;
+    }
+    this.state.phase = 'applying';
+    this.postState('applying', '正在回退上次批量修改…');
+    try {
+      const result = await restoreSnapshot(this.lastSnapshot);
+      this.lastSnapshot = [];
+      this.textCache.clear(); // 文件已还原，缓存失效
+      this.state.phase = 'results';
+      this.post({ type: 'undoState', payload: { available: false, files: 0 } });
+      // 用还原后的原文重算补丁，避免旧 hash / 旧 diff 让「应用」重复写入
+      await this.doScan({ refreshFiles: false, clearCache: true, sendInit: false });
+      let toast = `已回退 ${result.restored.length} 个文件（已保存）`;
+      if (result.saveFailures.length) {
+        toast += `；${result.saveFailures.length} 个文件保存失败`;
+        void vscode.window.showWarningMessage(
+          `${DISPLAY_NAME}：回退后部分文件保存失败：${result.saveFailures.join('；')}`,
+        );
+      }
+      this.postState('results', toast);
+      void vscode.window.showInformationMessage(`${DISPLAY_NAME}：${toast}`);
+    } catch (e) {
+      this.state.phase = 'results';
+      this.postError(e);
+      this.postState('results');
+    }
+  }
+
+  /** 命令面板入口：structedit.undoLast（面板关闭时也能回退）。 */
+  commandUndoLast(): Promise<void> {
+    return this.onUndoLast();
   }
 
   /* ── 其余 Webview 消息 ─────────────────────────────────── */

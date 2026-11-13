@@ -154,7 +154,9 @@ export type HostToWebview =
   | { type: 'review'; payload: ReviewPayload }
   | { type: 'report'; payload: ReportPayload }
   | { type: 'error'; payload: { message: string; detail?: string } }
-  | { type: 'fileContent'; payload: FileContentPayload };
+  | { type: 'fileContent'; payload: FileContentPayload }
+  /** 一键回退：上次应用前快照是否可用（宿主 → 前端，控制底栏按钮）。 */
+  | { type: 'undoState'; payload: { available: boolean; files: number } };
 
 export type BatchOp =
   | 'selectAll'
@@ -193,8 +195,10 @@ export type WebviewToHost =
   | { type: 'scan' }
   | { type: 'cancelScan' }
   | { type: 'previewAll' }
-  // 应用即保存（0.1.4 起不再有确认环节）；diff 预览在第 ③ 步给出，一次 Ctrl+Z 整体撤销
+  // 应用即保存（0.1.4 起不再有确认环节）；diff 预览在第 ③ 步给出，误改可一键回退
   | { type: 'apply'; uris: string[] }
+  /** 一键回退：把上次应用过的文件整体还原为应用前原文并立即保存。 */
+  | { type: 'undoLast' }
   | { type: 'openFile'; uri: string; line?: number }
   | { type: 'previewFile'; uri: string; path: string }
   | { type: 'importExpressionSet' }

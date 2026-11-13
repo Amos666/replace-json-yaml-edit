@@ -2,7 +2,7 @@
   "name": "replace-json-yaml-edit",
   "displayName": "Batch Replace for JSON & YAML",
   "description": "Batch replace values across JSON, YAML and any text files by path or regex - preview every diff in a visual panel, apply to hundreds of files with one undo.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "ghemail",
   "license": "MIT",
   "repository": {
@@ -51,7 +51,8 @@
     "onCommand:structedit.applyFile",
     "onCommand:structedit.showReport",
     "onCommand:structedit.selectAllMatches",
-    "onCommand:structedit.sequentialReview"
+    "onCommand:structedit.sequentialReview",
+    "onCommand:structedit.undoLast"
   ],
   "contributes": {
     "commands": [
@@ -82,6 +83,10 @@
       {
         "command": "structedit.sequentialReview",
         "title": "Batch Replace for JSON & YAML: Review Matches One by One"
+      },
+      {
+        "command": "structedit.undoLast",
+        "title": "Batch Replace for JSON & YAML: 一键回退上次批量修改"
       }
     ],
     "menus": {
@@ -104,6 +109,10 @@
       {
         "command": "structedit.openPanel",
         "key": "ctrl+alt+b"
+      },
+      {
+        "command": "structedit.undoLast",
+        "key": "ctrl+alt+z"
       }
     ],
     "configuration": {

@@ -91,7 +91,81 @@ function parseValue(raw: string | undefined, explicit: ValueType | undefined, ol
 function stringifyScalar(value: unknown, type: ValueType): string {
   if (type === 'string') return JSON.stringify(String(value));
   if (type === 'null') return 'null';
+  if (type === 'object' || type === 'array') return JSON.stringify(value);
   return String(value);
+}
+
+/** 删除时定位「键所在行的起点」：Map 用 pair.key.range，Seq 用节点行首（含 '- ' 标记）。 */
+function keyStartOf(parent: YamlNode | undefined, segs: Seg[], start: number): number {
+  if (parent && isMap(parent)) {
+    const key = String(segs[segs.length - 1]);
+    for (const pair of parent.items) {
+      if (keyOf(pair.key) === key) {
+        const keyNode = pair.key as YamlNode | undefined;
+        return keyNode?.range?.[0] ?? start;
+      }
+    }
+  }
+  return start;
+}
+
+/** insert：目标键不存在时，追加一行到父映射/序列末尾（0.1.5 反馈：新增指令无效）。 */
+function insertMissingPatch(
+  text: string,
+  parent: YamlNode | undefined,
+  segs: Seg[],
+  ins: Instruction,
+  di: number,
+): MinimalPatch | null {
+  const key = String(segs[segs.length - 1]);
+  const type = ins.valueType ?? 'string';
+  const value = parseValue(ins.value, type, 'string');
+  let at: number;
+  let rendered: string;
+
+  if (parent && isMap(parent)) {
+    if (parent.items.some(pair => keyOf(pair.key) === key)) return null; // 不产生重复键
+    const lastPair = parent.items[parent.items.length - 1];
+    let indent: string;
+    if (lastPair) {
+      const keyNode = lastPair.key as YamlNode | undefined;
+      const valNode = lastPair.value as YamlNode | undefined;
+      const anchor = valNode?.range?.[2] ?? keyNode?.range?.[2] ?? 0;
+      at = lineEnd(text, Math.max(0, anchor - 1));
+      indent = indentOf(text, keyNode?.range?.[0] ?? anchor);
+    } else {
+      const pStart = parent.range?.[0] ?? 0;
+      at = lineEnd(text, pStart);
+      indent = `${indentOf(text, pStart)}  `;
+    }
+    rendered = `${indent}${key}: ${stringifyScalar(value, type)}\n`;
+  } else if (parent && isSeq(parent)) {
+    const lastItem = parent.items[parent.items.length - 1] as YamlNode | undefined;
+    let marker = '- ';
+    if (lastItem) {
+      const anchor = lastItem.range?.[2] ?? 0;
+      at = lineEnd(text, Math.max(0, anchor - 1));
+      const itemLine = lineStart(text, lastItem.range?.[0] ?? anchor);
+      marker = `${/^[ \t]*/.exec(text.slice(itemLine))?.[0] ?? ''}- `;
+    } else {
+      at = lineEnd(text, parent.range?.[0] ?? 0);
+    }
+    rendered = `${marker}${stringifyScalar(value, type)}\n`;
+  } else {
+    return null;
+  }
+
+  const match: Match = {
+    instructionId: ins.id,
+    engine: 'structured',
+    segs,
+    range: { start: at, end: at },
+    oldValue: undefined,
+    oldType: type,
+    line: lineOf(text, at),
+    ...(di > 0 ? { risky: 'multiDoc' as const } : {}),
+  };
+  return { match, start: at, end: at, newText: rendered };
 }
 
 /** §5.2 PLAIN 字符串在必要时加引号，避免写出隐式类型 */
@@ -161,11 +235,17 @@ export function planYaml(text: string, instructions: Instruction[]): StructPlanR
 
       for (const segs of paths) {
         const node = doc.getIn(segs, true) as YamlNode | undefined;
-        if (!node) continue;
         const parentSegs = segs.slice(0, -1);
         const parent = (parentSegs.length
           ? doc.getIn(parentSegs, true)
           : doc.contents) as YamlNode | undefined;
+        // 目标键不存在 → 追加一行；原先这里直接 continue，导致「新增」指令完全无效。
+        if (ins.kind === 'insert' && !node) {
+          const patch = insertMissingPatch(text, parent, segs, ins, di);
+          if (patch) patches.push(patch);
+          continue;
+        }
+        if (!node) continue;
         const start = node.range?.[0];
         const valueEnd = node.range?.[1];
         if (start === undefined || valueEnd === undefined) continue;
@@ -184,38 +264,26 @@ export function planYaml(text: string, instructions: Instruction[]): StructPlanR
         };
 
         if (ins.kind === 'delete') {
-          let s = lineStart(text, start);
+          // 删除父节点：从键所在行开始，一直删到整个值（含全部子键/子项）结束，
+          // 不能再只删节点 range 起点的那一行，否则会留下孤儿子节点。
+          const keyStart = keyStartOf(parent, segs, start);
+          let s = lineStart(text, keyStart);
           while (s > 0) {
             const prevStart = lineStart(text, s - 1);
             if (/^\s*#/.test(text.slice(prevStart, s - 1))) s = prevStart;
             else break;
           }
+          const e = lineEnd(text, Math.max(keyStart, valueEnd - 1));
           patches.push({
-            match: { ...baseMatch, range: { start: s, end: lineEnd(text, start) } },
+            match: { ...baseMatch, range: { start: s, end: e } },
             start: s,
-            end: lineEnd(text, start),
+            end: e,
             newText: '',
           });
           continue;
         }
 
-        if (ins.kind === 'insert') {
-          if (!parent || !isMap(parent)) continue;
-          const key = String(segs[segs.length - 1]);
-          const lastPair = parent.items[parent.items.length - 1];
-          const anchor = (lastPair?.value as YamlNode | undefined)?.range?.[2] ?? start;
-          const at = lineEnd(text, anchor);
-          const type = ins.valueType ?? 'string';
-          const value = parseValue(ins.value, type, 'string');
-          patches.push({
-            match: { ...baseMatch, range: { start: at, end: at } },
-            start: at,
-            end: at,
-            newText: `${indentOf(text, anchor)}${key}: ${stringifyScalar(value, type)}\n`,
-          });
-          continue;
-        }
-
+        // 键已存在的 insert 视为 set（标量）；集合类型不产生重复键。
         // §7.2 set：复用原 Scalar 对象，用 value-end 保留行尾注释，禁止整篇输出
         if (!isScalar(node)) continue;
         const scalar = node as Scalar<unknown>;

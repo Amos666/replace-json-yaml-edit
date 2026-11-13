@@ -6,9 +6,13 @@
 
 import * as vscode from 'vscode';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { planFile, planSession } from '../../src/core/index.ts';
+import { applyChanges, restoreSnapshot } from '../../src/controllers/apply.ts';
+import { hashText } from '../../src/controllers/scan.ts';
+import { createInitialState } from '../../src/controllers/state.ts';
+import type { HostConfig, HostState } from '../../src/controllers/types.ts';
 import type { Instruction } from '../../src/core/types.ts';
 
 const delay = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -81,7 +85,7 @@ test('扩展激活并注册全部命令（仅编辑器面板，无侧边栏入�
     'structedit.openPanel',
     'structedit.useCursorPath', 'structedit.useSelectionAsPattern',
     'structedit.applyFile', 'structedit.showReport', 'structedit.selectAllMatches',
-    'structedit.sequentialReview',
+    'structedit.sequentialReview', 'structedit.undoLast',
   ]) {
     assert.ok(registered.includes(id), `command not registered: ${id}`);
   }
@@ -145,9 +149,11 @@ test('不注册侧边栏图标：仅 Ctrl+Alt+B 启动编辑器面板', async ()
   assert.equal(pkg.contributes?.views, undefined, '不应声明侧边栏 webview views');
   assert.equal(pkg.contributes?.menus?.['view/title'], undefined, '不应有 view/title 菜单');
   const kbs = pkg.contributes?.keybindings ?? [];
-  assert.equal(kbs.length, 1, `快捷键应只剩一个，实际 ${kbs.length} 个`);
+  assert.equal(kbs.length, 2, `快捷键应为面板启动 + 一键回退，实际 ${kbs.length} 个`);
   assert.equal(kbs[0].command, 'structedit.openPanel');
   assert.equal(kbs[0].key, 'ctrl+alt+b');
+  assert.equal(kbs[1].command, 'structedit.undoLast');
+  assert.equal(kbs[1].key, 'ctrl+alt+z');
   await vscode.commands.executeCommand('structedit.openPanel');
   await delay(400);
 });
@@ -231,6 +237,47 @@ test('§10.5 补例：混合会话中每种文件只被其 fileScope 命中的�
   assert.ok(jsonPlan && yamlPlan);
   assert.equal(jsonPlan.patches.length, 1, 'JSON file must only get the JSON instruction');
   assert.equal(yamlPlan.patches.length, 1, 'YAML file must only get the YAML instruction');
+});
+
+test('§10.5 应用即全部保存 + 一键回退落盘还原（0.1.5）', async () => {
+  const rel = `config/save-probe-${Date.now()}.yaml`;
+  const uri = vscode.Uri.joinPath(root(), rel);
+  const original = 'name: demo\nimage: old:v1\nconfig:\n  host: localhost\n  port: 8080\n';
+  writeFileSync(uri.fsPath, original, 'utf8');
+
+  const ins: Instruction[] = [
+    { id: 'set', enabled: true, engine: 'structured', format: 'yaml', fileScope: { mode: 'fixed', format: 'yaml' }, kind: 'set', path: '$.image', value: 'new:v2', valueType: 'string' },
+    { id: 'del', enabled: true, engine: 'structured', format: 'yaml', fileScope: { mode: 'fixed', format: 'yaml' }, kind: 'delete', path: '$.config' },
+    { id: 'ins', enabled: true, engine: 'structured', format: 'yaml', fileScope: { mode: 'fixed', format: 'yaml' }, kind: 'insert', path: '$.added', value: '42', valueType: 'number' },
+  ];
+  const plan = planFile(original, rel, ins);
+  assert.equal(plan.patches.length, 3, `应有 3 处补丁，实际 ${plan.patches.length}`);
+
+  const state: HostState = createInitialState();
+  const uriStr = uri.toString();
+  state.records.set(uriStr, {
+    uri: uriStr, relPath: rel, name: rel.split('/').pop()!, ext: 'yaml',
+    applicable: true, instructionCount: 3, changeCount: 3, checked: true,
+    hitRanges: [], hash: hashText(original), patches: plan.patches,
+    parseErrors: [], conflictIds: [], scanned: true,
+  });
+  const cfg: HostConfig = { maxMatches: 2000, maxFileSizeMB: 5, maxFiles: 5000, defaultExclude: [] };
+
+  const result = await applyChanges(state, cfg, [uriStr]);
+  assert.equal(result.appliedUris.length, 1, '应应用 1 个文件');
+  assert.equal(result.saveFailures.length, 0, '不应有保存失败');
+
+  // 关键：直接读磁盘，证明 apply 已保存（此前只改内存 buffer，用户必须逐个打开文件保存）
+  const onDisk = readFileSync(uri.fsPath, 'utf8');
+  assert.equal(onDisk, 'name: demo\nimage: new:v2\nadded: 42\n', '应用后磁盘应已写入全部三类变更');
+  const doc = await vscode.workspace.openTextDocument(uri);
+  assert.equal(doc.isDirty, false, '应用后文档不应仍是未保存状态');
+
+  // 一键回退：整文件还原 + 立即保存
+  const undo = await restoreSnapshot(result.snapshot);
+  assert.equal(undo.restored.length, 1, '应还原 1 个文件');
+  assert.equal(readFileSync(uri.fsPath, 'utf8'), original, '回退后磁盘内容应逐字节还原');
+  assert.equal((await vscode.workspace.openTextDocument(uri)).isDirty, false, '回退后文档应已保存');
 });
 
 export async function run(): Promise<void> {

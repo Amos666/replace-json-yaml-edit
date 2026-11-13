@@ -84,6 +84,40 @@ test('§10.1 YAML 幂等', () => {
   assert.equal(back, before);
 });
 
+test('§7.2 YAML insert 新键（0.1.5 修复：不再产生 0 补丁）', () => {
+  const before = 'version: 1\nconfig:\n  host: localhost\n  port: 8080\ntags:\n  - a\n';
+  const nested = planYaml(before, [structured('i1', 'yaml', 'insert', '$.config.newKey', 'hello', 'string')]);
+  assert.equal(nested.patches.length, 1);
+  assert.equal(
+    applyPatches(before, nested.patches),
+    'version: 1\nconfig:\n  host: localhost\n  port: 8080\n  newKey: "hello"\ntags:\n  - a\n',
+  );
+  const root = planYaml(before, [structured('i2', 'yaml', 'insert', '$.added', '42', 'number')]);
+  assert.equal(applyPatches(before, root.patches).includes('added: 42'), true);
+  const seq = planYaml(before, [structured('i3', 'yaml', 'insert', '$.tags[2]', 'c', 'string')]);
+  assert.match(applyPatches(before, seq.patches), /  - "c"\n$/);
+  const obj = planYaml(before, [structured('i4', 'yaml', 'insert', '$.meta', '{"a":1}', 'object')]);
+  assert.match(applyPatches(before, obj.patches), /meta: \{"a":1\}\n/);
+});
+
+test('§7.2 YAML 删除父节点时子节点一并删除（0.1.5 修复）', () => {
+  const before = 'version: 1\nconfig:\n  host: localhost\n  port: 8080\n  debug: true\ntags:\n  - a\n  - b\n';
+  const r = planYaml(before, [structured('d', 'yaml', 'delete', '$.config')]);
+  const after = applyPatches(before, r.patches);
+  assert.equal(after, 'version: 1\ntags:\n  - a\n  - b\n');
+  const r2 = planYaml(before, [structured('d2', 'yaml', 'delete', '$.tags')]);
+  assert.equal(applyPatches(before, r2.patches), 'version: 1\nconfig:\n  host: localhost\n  port: 8080\n  debug: true\n');
+  const r3 = planYaml(before, [structured('d3', 'yaml', 'delete', '$.config.host')]);
+  assert.equal(applyPatches(before, r3.patches).includes('host: localhost'), false);
+});
+
+test('§7.1 JSON 删除多行父节点时子节点一并删除', () => {
+  const before = '{\n  "version": 1,\n  "config": {\n    "host": "localhost",\n    "port": 8080\n  },\n  "tags": ["a", "b"]\n}\n';
+  const r = planJsonc(before, [structured('d', 'json', 'delete', '$.config')]);
+  const after = applyPatches(before, r.patches);
+  assert.equal(after, '{\n  "version": 1,\n  "tags": ["a", "b"]\n}\n');
+});
+
 test('§7.2 YAML 多文档命中标记 multiDoc', () => {
   const before = 'a: 1\n---\na: 2\n';
   const r = planYaml(before, [structured('i', 'yaml', 'set', '$.a', '9', 'number')]);

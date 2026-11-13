@@ -551,4 +551,34 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     assert.match(xs1, /image: new:v9/, `xs1 应同时完成 set，实际「${xs1}」`);
     assert.doesNotMatch(xs1, /env:/, `xs1 的 env 行应被删除，实际「${xs1}」`);
   });
+
+  /* ── 0.1.5：应用即全部保存 + 一键回退整体还原 ─────────────── */
+  await t.test('应用即全部保存，点「一键回退」整体还原并保存', async () => {
+    const saveBefore = stub.stubState.saveCalls;
+    assert.ok(saveBefore > 0, '应用后应已调用 doc.save()（应用即全部保存）');
+    const undoBtn = ui.q('[data-action="undo-last"]') as HTMLElement | null;
+    assert.ok(undoBtn, '底栏应有一键回退按钮');
+    assert.notEqual(undoBtn!.getAttribute('aria-disabled'), 'true', '上次应用后回退按钮应可用');
+
+    const applyBefore = stub.stubState.applyEditCalls;
+    undoBtn!.click();
+    await until(
+      () => stub.stubState.applyEditCalls > applyBefore,
+      '回退提交 WorkspaceEdit',
+    );
+    await until(
+      () => stub.stubState.hostMessages.some(
+        (m) => m.type === 'undoState' && !(m.payload as AnyMsg).available,
+      ),
+      '回退后下发 undoState(available=false)',
+    );
+    assert.ok(stub.stubState.saveCalls > saveBefore, '回退后同样立即保存');
+
+    // 最后一次应用的原文应被整体还原：被删的 env 行回来、image 回到上一轮值
+    const xs1 = read('aaa/bbbb/xs1.yml');
+    assert.match(xs1, /image: new:v3/, `回退应还原 set 前的值，实际「${xs1}」`);
+    assert.match(xs1, /env: dev/, `回退应还原被删除的 env 行，实际「${xs1}」`);
+    const bulk0 = read('bulk/b00.yml');
+    assert.equal(bulk0, 'image: old:v1\nenv: dev\n', 'bulk 文件应还原为应用前原文');
+  });
 });

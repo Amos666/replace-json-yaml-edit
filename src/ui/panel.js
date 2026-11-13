@@ -81,6 +81,8 @@
     step: 1,                          // 三步向导：① 选择文件 ② 编辑值 ③ 预览并应用（不持久化）
     previewUri: '',                   // 双击预览弹框当前文件
     scopeRoot: null,                  // 扫描根目录（null = VS Code 打开的工作区；由宿主 init/state 下发）
+    canUndo: false,                     // 是否存在可回退的上次应用快照
+    undoFiles: 0,                       // 可回退的文件数
   };
 
   const STEPS = [
@@ -1104,7 +1106,7 @@
       const hints = [
         '第 ① 步：默认以 VS Code 打开的工作区为根目录，可点「选择目录…」改到任意目录（含工作区之外）；设定过滤条件后点「扫描文件」载入列表，再勾选要修改的文件。页面初始不扫描任何文件。',
         '第 ② 步：新增 / 修改 / 删除要写入的值（结构化 set / delete / insert 或文本 sed 替换）。双击文件行可预览源文件格式。',
-        '第 ③ 步：核对 diff 预览，点「应用」一次提交；一次 Ctrl+Z 可整体撤销。',
+        '第 ③ 步：核对 diff 预览，点「应用」一次提交并全部保存；误改可一键回退。',
       ];
       h.innerHTML = ic('info') + '<span>' + esc(hints[S.step - 1] || hints[0]) + '</span>';
     }
@@ -1171,9 +1173,10 @@
       '<div class="bb-stats">变更 <span class="bb-n">' + n + '</span> · 文件 <span class="bb-n">' + f + '</span> · 已选 <span class="bb-n">' + sel + '</span></div>' +
       '<div class="bb-actions">' +
       '<button type="button" class="btn btn-sec" data-action="preview-all">' + ic('preview') + ' 预览全部 Diff</button>' +
-      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '点击即保存所选变更（无需确认），一次 Ctrl+Z 可整体撤销')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
+      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '点击即保存所选变更（无需确认），误改可一键回退')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
+      '<button type="button" class="btn btn-sec" data-action="undo-last"' + (S.canUndo ? '' : ' aria-disabled="true"') + ' title="' + (S.canUndo ? '把上次应用过的 ' + S.undoFiles + ' 个文件整体还原并保存' : '暂无可回退的批量修改') + '">' + ic('discard') + ' 一键回退</button>' +
       '</div>' +
-      '<div class="bb-hint">' + ic('info') + ' 一次 Ctrl+Z 整体撤销</div>';
+      '<div class="bb-hint">' + ic('info') + ' 应用即全部保存 · 误改可一键回退（Ctrl+Alt+Z）</div>';
   }
 
   /* ── 四态：禁用 ─────────────────────────────────────────── */
@@ -1296,6 +1299,11 @@
     renderReview(); renderBottomBar(); renderScopePreserve();
   }
   function onReport(p) { S.report = p; S.phase = 'report'; renderResults(); renderBottomBar(); renderOverview(); }
+  function onUndoState(p) {
+    S.canUndo = !!p.available;
+    S.undoFiles = p.files || 0;
+    renderBottomBar();
+  }
   function onError(p) {
     S.errors.push({ message: p.message || '发生错误', detail: p.detail || '' });
     renderErrorStrip(); renderInstructions(); renderScopePreserve(); renderResults();
@@ -1312,6 +1320,7 @@
       case 'report': onReport(m.payload); break;
       case 'error': onError(m.payload); break;
       case 'fileContent': onFileContent(m.payload); break;
+      case 'undoState': onUndoState(m.payload); break;
     }
   });
 
@@ -1344,7 +1353,7 @@
     if (!uris.length) { toast('请先选择文件范围'); return; }
     const n = S.counts.changes || 0;
     // 0.1.4 反馈：应用不再弹「逐条列明细」确认框——文件多时根本核对不过来。
-    // 点击即提交：diff 明细已在第 ③ 步预览里可见，应用后一次 Ctrl+Z 可整体撤销。
+    // 点击即提交并保存：diff 明细已在第 ③ 步预览里可见，应用后可一键回退整体还原。
     post({ type: 'apply', uris: uris });
     toast('正在应用 ' + n + ' 处变更（' + uris.length + ' 个文件）…');
   }
@@ -1413,6 +1422,12 @@
       case 'export': post({ type: 'exportExpressionSet', data: buildExpressionSet() }); toast('已发出导出请求'); break;
       case 'history': post({ type: 'showReport' }); break;
       case 'help': post({ type: 'help' }); break;
+      case 'undo-last': {
+        if (!S.canUndo) { toast('暂无可回退的批量修改'); break; }
+        post({ type: 'undoLast' });
+        toast('正在回退上次批量修改…');
+        break;
+      }
 
       case 'engine-tab': {
         const eng = t.getAttribute('data-engine');

@@ -49,6 +49,8 @@ export interface StubState {
   panelCount: number;
   config: Record<string, unknown>;
   applyEditCalls: number;
+  /** doc.save() 调用次数：验证「应用即保存 / 回退即保存」。 */
+  saveCalls: number;
 }
 
 export const stubState: StubState = {
@@ -66,6 +68,7 @@ export const stubState: StubState = {
   panelCount: 0,
   config: {},
   applyEditCalls: 0,
+  saveCalls: 0,
 };
 
 export function resetStub(opts: { roots: string[] }): void {
@@ -83,6 +86,7 @@ export function resetStub(opts: { roots: string[] }): void {
   stubState.panelCount = 0;
   stubState.config = {};
   stubState.applyEditCalls = 0;
+  stubState.saveCalls = 0;
   openDocs.clear();
 }
 
@@ -223,6 +227,7 @@ export class TextDocumentImpl {
   }
 
   async save(): Promise<boolean> {
+    stubState.saveCalls += 1;
     fs.writeFileSync(this.uri.fsPath, this.text, 'utf8');
     return true;
   }

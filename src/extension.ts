@@ -24,6 +24,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ['structedit.showReport', () => controller.commandShowReport()],
     ['structedit.selectAllMatches', () => controller.commandSelectAllMatches()],
     ['structedit.sequentialReview', () => controller.commandSequentialReview()],
+    ['structedit.undoLast', () => controller.commandUndoLast()],
   ];
 
   for (const [id, handler] of commands) {

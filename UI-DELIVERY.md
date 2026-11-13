@@ -146,7 +146,7 @@
 - **G5 · `tree` 不回传 `treeFilter` / `selection`**：「已解析」回显与 glob 只读摘要态、overrides 是否存在只能靠前端输入态与 `init` 推断。建议 `TreePayload` 回传 `TreeFilter` 与 `SerializedSelection`（或新增 `selection` 消息）。
 - **G6 · 审阅 Space 无 `toggle` 动作**：`ReviewAction` 无 toggle，逐个审阅的 `Space` 以 `select { uri, checked }` 实现切换（符合 §6.4「即时写 overrides」），语义正确但动作名不在 `ReviewAction` 枚举内。
 - **G7 · `codicon-steps` 不存在**：§8.5 映射表给「逐个审阅 = `steps`」，但随扩展分发的 `@vscode/codicons` 中无 `codicon-steps`（实测 `grep codicon-steps:before` 为 0）。已改用语义最接近且真实存在的 `debug-step-over`，全站保持一致；建议规格回填修订映射表。
-- **G8 · 应用确认已移除（0.1.4）**：反馈「文件太多时逐条确认无法操作」，`requestApply()` 点击即提交，宿主 `applyChanges` 的 deleteGuard/`confirmed` 一并删除；误改安全性改由第 ③ 步 diff 预览 + 一次 Ctrl+Z 整体撤销 + 应用前 hash 二次校验承担。原 >500 明细列表（只能列 `flat` 前 40 项）随弹框一起移除。
+- **G8 · 应用确认已移除（0.1.4）**：反馈「文件太多时逐条确认无法操作」，`requestApply()` 点击即提交，宿主 `applyChanges` 的 deleteGuard/`confirmed` 一并删除；误改安全性改由第 ③ 步 diff 预览 + 一键回退（0.1.5）+ 应用前 hash 二次校验承担。原 >500 明细列表（只能列 `flat` 前 40 项）随弹框一起移除。
 - **G9 · 键位实现方式与 §8.6 表述差异**：§8.6 原文要求快捷键经 `keybinding` contribution + `when` 子句转发；但 Webview 内键盘事件宿主收不到，团队分工明确要求「Webview 内键位在 `panel.js` 内实现即可」。已按后者在前端实现全部键位；如仍需命令面板键位，需集成方在 `package.json` 补 `keybindings` 并转发命令。
 - **G10 · §8.9 / §6.5 部分 P1 未实现**：路径输入失焦红波浪线校验、`@` 结构自动补全、sed 简写粘贴自动展开表单（保留原式注释）、非法 sed 特性「为什么不支持 + 怎么改」提示、>500 节点虚拟滚动。已实现：文本 `flags` 仅接受 `g/i/m` 的红框校验、过滤框 glob 括号平衡校验与错误态、树/结果区 `max-height + overflow:auto`（非虚拟滚动）。这些属 P1 / 增强项，建议排期补齐。
 - **G11 · 引擎 Tab 语义**：§8.1 ASCII 把「结构化区 / 文本区」画成两个子区，未明确 Tab 是「视图过滤」还是「新建默认值」。已实现为**视图过滤 + 数量提示**（两 Tab 与区块② 目标格式分段联动到同一 `S.targetFormat`，双引擎指令共存、切换不改已有指令），并在指令区显示「共 N 条（双引擎混用）」。若产品期望「始终并列显示全部指令」，需调整 `renderInstructions()` 的过滤逻辑（一行改动）。
