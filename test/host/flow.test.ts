@@ -902,8 +902,12 @@ test('0.2.4 无错误时 error-strip[hidden] 不占位、有错误时仍可见',
   </body></html>`;
   const dom = new JSDOM(html, { pretendToBeVisual: true });
   const w = dom.window;
-  const hidden = w.getComputedStyle(w.document.getElementById('err-hidden')).display;
-  const shown = w.getComputedStyle(w.document.getElementById('err-shown')).display;
+  const hiddenEl = w.document.getElementById('err-hidden');
+  const shownEl = w.document.getElementById('err-shown');
+  assert.ok(hiddenEl, '应含 #err-hidden 节点');
+  assert.ok(shownEl, '应含 #err-shown 节点');
+  const hidden = w.getComputedStyle(hiddenEl).display;
+  const shown = w.getComputedStyle(shownEl).display;
   assert.equal(hidden, 'none', '带 hidden 的空错误条必须 display:none，否则常驻露出玫红 border-bottom');
   assert.equal(shown, 'flex', '真正有错误时错误条仍应可见（提示功能不回退）');
   w.close();
