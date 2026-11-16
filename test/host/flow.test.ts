@@ -180,34 +180,110 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     '宿主下发 init',
   );
 
+  /** 0.2.0：点击「全选匹配」并等待宿主回发 tree（按钮切换为「取消全选」即生效）。
+   * 若当前视图已全选（按钮是 deselectAll）则跳过。 */
+  async function selectAllVisible() {
+    const btn = ui.q('.pk-result [data-action="batch"][data-op="selectAll"]') as HTMLElement | null;
+    if (!btn) return;
+    btn.click();
+    await until(
+      () => !!ui.q('.pk-result [data-action="batch"][data-op="deselectAll"]'),
+      '全选匹配生效（按钮切换为取消全选）',
+    );
+    await wait(250);
+  }
+  function selectedCount(): string {
+    return (ui.q('.pk-result .hit-count')?.textContent ?? '').match(/已选\s*(\d+)/)?.[1] ?? '';
+  }
+
+
   /* ── bug 1a：默认根目录 = VS Code 打开的工作区根目录 ───── */
 
-  await t.test('bug1 默认在工作区根目录扫描，并显示文件列表', async () => {
-    assert.ok(
-      ui.q('[data-action="scan-files"]'),
-      '第 ① 步应有「扫描文件」按钮',
-    );
-    ui.click('[data-action="scan-files"]');
+  await t.test('bug1 首开异步扫描 + 默认 JSON 隐藏无关文件与空目录', async () => {
+    assert.equal(ui.q('[data-action="scan-files"]'), null, '不应再有「扫描文件」按钮');
+    assert.equal(ui.q('.ov-scan-text'), null, '概览不应再有「就绪 N/M」数量对比');
+
+    // 0.2.1：首开不点任何按钮，宿主异步后台扫描项目根目录并刷新树
     await until(
       () => stub.stubState.hostMessages.some(
         (m) => m.type === 'state' && (m.payload as AnyMsg)?.phase === 'results',
       ),
-      '首次扫描完成',
+      '首开异步自动扫描完成',
     );
-
     const first = stub.stubState.findFilesCalls[0];
-    assert.ok(first, '点「扫描文件」后应调用 findFiles');
+    assert.ok(first, '首开应自动调用 findFiles');
     assert.equal(first.base, null, '默认应扫描工作区根目录（非 RelativePattern）');
+    // 后台异步：init 消息早于 results，页面先渲染再刷新树；且只自动扫一次
+    const msgs = stub.stubState.hostMessages;
+    const initIdx = msgs.findIndex((m) => m.type === 'init');
+    const resultsIdx = msgs.findIndex((m) => m.type === 'state' && (m.payload as AnyMsg)?.phase === 'results');
+    assert.ok(initIdx >= 0 && resultsIdx > initIdx, 'init 应先下发、results 后异步到达');
+    assert.ok(!ui.q('#bottombar [data-action="apply"]'), '首开第①步底栏应只有引导');
+
+    // 0.2.1：默认目标格式 JSON → 树里只显示 .json，其它后缀与空目录直接隐藏（不再灰显）
+    const rows = ui.rows();
+    assert.deepEqual(rows, ['config/app.json'], `默认 JSON 应只显示 config/app.json，实际：${rows.join(', ')}`);
     assert.equal(
-      stub.stubState.findFilesCalls.filter((c) => c.base !== null).length,
-      0,
-      '未选择目录时不应使用外部根目录',
+      ui.win.document.querySelectorAll('#scope-tree .tree-row.is-locked').length, 0,
+      '无关文件不应再以灰显行出现',
+    );
+    assert.equal(
+      [...ui.win.document.querySelectorAll('#scope-tree .tree-row.is-dir')]
+        .filter((n) => /aaa|bbbb/.test(n.getAttribute('data-path') || '')).length, 0,
+      '不含可见文件的空目录不应显示',
     );
 
-    const rows = ui.rows();
-    assert.ok(rows.includes('config/app.json'), `应列出 config/app.json，实际：${rows.join(', ')}`);
-    assert.ok(rows.includes('aaa/bbbb/xs1.yml'), `应列出 aaa/bbbb/xs1.yml，实际：${rows.join(', ')}`);
-    assert.ok(rows.includes('README.md'), `应列出 README.md，实际：${rows.join(', ')}`);
+    // 切到 YAML 目标格式，供后续用例继续（后续都是结构化 YAML 指令）
+    ui.click('[data-action="target-format"][data-format="yaml"]');
+    await until(
+      () => ui.rows().length === 3 && ui.rows().every((p) => /\.ya?ml$/i.test(p)),
+      `切到 YAML 后应显示 3 个 yml/yaml 文件，实际：${ui.rows().join(', ')}`,
+    );
+  });
+
+  /* ── 0.2.0：默认全不选、全选/取消全选、清空全部 ───────────── */
+  await t.test('默认全不选：全选匹配 / 取消全选 / 清空全部', async () => {
+    assert.equal(selectedCount(), '0', '刚打开树默认全部不选中');
+    const checked = ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file .tri[aria-checked="true"]');
+    assert.equal(checked.length, 0, '树里不应有任何已勾选行');
+    assert.ok(ui.q('.pk-result [data-action="batch"][data-op="selectAll"]'), '应有「全选匹配」按钮');
+    assert.ok(ui.q('.pk-result [data-action="batch"][data-op="clearAll"]'), '应有「清空全部」按钮');
+
+    await selectAllVisible();
+    const after = Number(selectedCount());
+    assert.equal(after, 3, `YAML 模式下全选 3 个 yml/yaml，实际 ${selectedCount()}`);
+    assert.equal(
+      ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file .tri[aria-checked="true"]').length,
+      after, '树里勾选行数应与已选数一致',
+    );
+
+    // 再点「取消全选」→ 回到全不选
+    (ui.q('.pk-result [data-action="batch"][data-op="deselectAll"]') as HTMLElement).click();
+    await until(
+      () => !!ui.q('.pk-result [data-action="batch"][data-op="selectAll"]'),
+      '取消全选生效',
+    );
+    await wait(250);
+    assert.equal(selectedCount(), '0', '取消全选后回到全部不选中');
+  });
+
+  /* 0.1.8：选择器单一动线 —— 结果与向导徽标同源，确认条不重复数字 */
+  await t.test('picker 结构精简且计数同源', async () => {
+    const result = (ui.q('.pk-result .hit-count')?.textContent ?? '').match(/已选\s*(\d+)/);
+    const badge = (ui.q('.wiz-step[aria-current="step"] .wb-n')?.textContent ?? '').trim();
+    assert.ok(result, '结果条应显示已选数');
+    assert.equal(result[1], badge, '结果条与向导徽标的已选数必须一致');
+    assert.match(ui.q('.pk-confirm-info')?.textContent ?? '', /只有勾选的文件会进入修改列表/, '确认条说明只有选中才进修改列表');
+    assert.doesNotMatch(ui.q('.pk-confirm-info')?.textContent ?? '', /已选\s*\d/, '确认条不重复已选数字');
+    assert.equal(ui.q('[data-action="scan-files"]'), null, '不应有扫描文件按钮');
+    assert.ok(ui.q('#filter-input'), '应有唯一主过滤框');
+    assert.equal(ui.q('.pk-confirm [data-action="wizard-step"]'), null, '确认条不应重复下一步按钮');
+    assert.equal(ui.q('.pk-more')?.hasAttribute('hidden'), true, '更多面板默认折叠');
+    // 0.1.9：第①步底栏只有上一步/下一步引导，无预览/应用/回退
+    assert.equal(ui.q('#bottombar [data-action="preview-all"]'), null, '前两步不应显示预览全部 Diff');
+    assert.equal(ui.q('#bottombar [data-action="apply"]'), null, '前两步不应显示应用');
+    assert.equal(ui.q('#bottombar [data-action="undo-last"]'), null, '前两步不应显示一键回退');
+    assert.ok(ui.q('#bottombar .bb-nav [data-action="wizard-step"][data-step="2"]'), '第①步底栏应有下一步引导');
   });
 
   /* ── bug 3：筛选框下面要能显示出数据 ────────────────────── */
@@ -216,7 +292,7 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     const tree = ui.q('#scope-tree');
     assert.ok(tree, '文件范围树容器存在');
     const fileRows = ui.rows();
-    assert.ok(fileRows.length >= 5, `文件行应 ≥5，实际 ${fileRows.length}`);
+    assert.ok(fileRows.length >= 3, `YAML 模式下应列出 3 个文件，实际 ${fileRows.length}`);
     const dirRows = ui.q('#scope-tree .tree-row.is-dir');
     assert.ok(dirRows, '应渲染目录行');
     // 空态 / 骨架屏都不算「显示数据」
@@ -225,7 +301,7 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       '文件列表区域不应还是骨架屏',
     );
     const hitText = ui.q('.hit-count')?.textContent ?? '';
-    assert.match(hitText, /命中\s*5/, `命中统计应为 5，实际「${hitText}」`);
+    assert.match(hitText, /匹配\s*3\s*\/\s*5/, `YAML 匹配 3 / 总数 5，实际「${hitText}」`);
   });
 
   /* ── bug 1b：选择目录弹窗（可选工作区外目录） ───────────── */
@@ -271,7 +347,7 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
 
     ui.click('[data-action="reset-scope-root"]');
     await until(
-      () => ui.rows().includes('config/app.json'),
+      () => ui.rows().includes('config/app.yaml'),
       '恢复工作区根目录后重新列出根目录文件',
     );
     assert.ok(
@@ -289,10 +365,10 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       `路径 glob 筛选后应只剩 2 个 yml，实际：${ui.rows().join(', ')}`,
     );
 
-    // 勾选状态不受筛选影响：仍选中全部 5 个文件
+    // 0.2.0：默认全不选，筛选只影响显示、不改变勾选集：已选恒为 0。
     const selected = (ui.q('.hit-count')?.textContent ?? '').match(/已选\s*(\d+)/);
-    assert.ok(selected, `命中栏应显示已选数量，实际「${ui.q('.hit-count')?.textContent}」`);
-    assert.equal(selected[1], '5', `筛选不改变勾选，已选应仍为 5，实际 ${selected[1]}`);
+    assert.ok(selected, `统计栏应显示已选数量，实际「${ui.q('.hit-count')?.textContent}」`);
+    assert.equal(selected[1], '0', `筛选不改变勾选，已选应仍为 0，实际 ${selected[1]}`);
 
     // 文件名（不带路径）glob 也要认：前端/宿主匹配必须一致
     ui.type('#filter-input', 'xs*.yml');
@@ -309,14 +385,81 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     );
 
     ui.type('#filter-input', '');
-    await until(() => ui.rows().length === 5, '清空筛选恢复全部文件');
+    await until(() => ui.rows().length === 3, '清空筛选恢复 3 个 yml/yaml 文件');
+    // 0.2.0：结果条「匹配 N」与「全选匹配 N」必须同源（同源同渲染，杜绝旧帧分裂）
+    const matchN = (ui.q('.pk-result .hit-count')?.textContent ?? '').match(/匹配\s*(\d+)/)?.[1];
+    const allN = (ui.q('.pk-result [data-action="batch"][data-op="selectAll"]')?.textContent ?? '').match(/(\d+)/)?.[1];
+    assert.ok(matchN && allN, `应同时显示匹配数与全选按钮数，实际 match=${matchN} all=${allN}`);
+    // 后锁定「不可选」的文件不计入全选按钮数（默认 JSON 下 5 个文件仅 1 个可选）
+    assert.ok(Number(allN) <= Number(matchN), '全选按钮的可选数不应超过匹配数');
+    assert.equal(allN, '3', `YAML 模式下 3 个 yml/yaml 可选，实际 ${allN}`);
+    // 0.1.8：过滤后结果条与向导徽标仍同源
+    const r1 = (ui.q('.pk-result .hit-count')?.textContent ?? '').match(/已选\s*(\d+)/);
+    const b1 = (ui.q('.wiz-step[aria-current="step"] .wb-n')?.textContent ?? '').trim();
+    assert.equal(r1?.[1], b1, '过滤后结果条与向导徽标已选数仍须一致');
+
+    // 0.2.1：YAML 模式下 json/md 直接从树中隐藏（不再灰显），只剩 3 个 yml/yaml
+    const rows4 = ui.rows();
+    assert.equal(rows4.length, 3, `应只剩 3 个 yml/yaml，实际：${rows4.join(', ')}`);
+    assert.equal(rows4.filter((p) => /\.json$|\.md$/i.test(p)).length, 0, 'json/md 不应出现在树中');
+    assert.equal(
+      ui.win.document.querySelectorAll('#scope-tree .tree-row.is-locked').length, 0,
+      '不应再有灰显行（无关文件已隐藏）',
+    );
+    assert.equal(ui.q('.panel.policy .policy-lock'), null, '不应再有「扩展名策略（只读）」面板');
+  });
+
+  /* ── 0.1.9：底栏按步骤分支 + 无重复引导 ───────────────────── */
+  await t.test('底栏分步：前两步引导、第③步操作、无重复引导', async () => {
+    // 第②步：只有上一步/下一步
+    ui.click('[data-action="wizard-step"][data-step="2"]');
+    assert.equal(ui.q('#bottombar [data-action="preview-all"]'), null, '第②步不应显示预览');
+    assert.equal(ui.q('#bottombar [data-action="apply"]'), null, '第②步不应显示应用');
+    assert.ok(ui.q('#bottombar .bb-nav [data-action="wizard-step"][data-step="1"]'), '第②步应有上一步');
+    assert.ok(ui.q('#bottombar .bb-nav [data-action="wizard-step"][data-step="3"]'), '第②步应有下一步');
+    // 页面上不应再有重复的前/后一步按钮（向导条、ins-footer、pk-confirm）
+    assert.equal(ui.q('#wizard .wiz-actions'), null, '向导条不应再放上一步按钮');
+    assert.equal(ui.q('#ins-footer [data-action="wizard-next"]'), null, '指令区不应重复下一步');
+    assert.equal(ui.q('.pk-confirm [data-action="wizard-step"]'), null, '确认条不应重复下一步');
+
+    // 第③步：只显示三个操作按钮，不再显示引导
+    ui.click('[data-action="wizard-step"][data-step="3"]');
+    assert.ok(ui.q('#bottombar [data-action="preview-all"]'), '第③步应显示预览全部 Diff');
+    assert.ok(ui.q('#bottombar [data-action="apply"]'), '第③步应显示应用');
+    assert.ok(ui.q('#bottombar [data-action="undo-last"]'), '第③步应显示一键回退');
+    assert.equal(ui.q('#bottombar .bb-nav'), null, '第③步不应再显示上一步/下一步引导');
+    // 回到第①步，供后续用例继续使用
+    ui.click('[data-action="wizard-step"][data-step="1"]');
   });
 
   /* ── bug 2：YAML 格式下 yml 文件被识别 ──────────────────── */
 
   await t.test('bug2 选 YAML 格式后 .yml 文件进入候选并可匹配筛选', async () => {
-    // 第 ① 步先把「目标格式（新建指令默认值）」切到 YAML
-    ui.click('[data-action="target-format"][data-format="yaml"]');
+    // 0.2.1：此时已是 YAML 模式，json/md 隐藏、yml 可见
+    assert.ok(ui.q('[data-action="target-format"][data-format="yaml"]')?.getAttribute('aria-pressed') === 'true',
+      '当前应处于 YAML 目标格式');
+    const ymlRows = ui.rows();
+    assert.equal(ymlRows.length, 3, `应显示 3 个 yml/yaml，实际：${ymlRows.join(', ')}`);
+    assert.equal(ymlRows.filter((p) => /\.json$|\.md$/i.test(p)).length, 0, 'json/md 应隐藏');
+    // 0.2.0：换筛选条件逐步多次添加，每次选择逻辑一致（累积不清空）
+    // 先只筛出一个子集，全选一次；再放宽条件，新出现的文件默认不选，再全选追加。
+    ui.type('#filter-input', 'app.yaml');
+    await until(() => ui.rows().length === 1, '先筛出单个 app.yaml');
+    assert.equal(selectedCount(), '0', '新筛选结果默认全不选');
+    await selectAllVisible(); // 第一次：加入 1 个
+    const firstSel = Number(selectedCount());
+    assert.equal(firstSel, 1, `首次全选应选中 1 个，实际 ${selectedCount()}`);
+    ui.type('#filter-input', '');
+    await until(() => ui.rows().length === 3, '放宽条件恢复 3 个 yml/yaml');
+    assert.equal(selectedCount(), String(firstSel), '换筛选条件不应清空已选（累积保留）');
+    // 新出现的 yml 文件此刻仍未勾选
+    const unchecked = ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file:not(.is-locked) .tri[aria-checked="false"]');
+    assert.ok(unchecked.length > 0, '放宽条件后新出现的文件应默认不选中');
+    await selectAllVisible(); // 第二次：同一套逻辑，追加新出现的文件
+    const secondSel = Number(selectedCount());
+    assert.ok(secondSel > firstSel, `第二次全选应追加新文件，${firstSel} → ${secondSel}`);
+    assert.equal(secondSel, 3, `两次累积应得到 3 个可选文件，实际 ${secondSel}`);
+
     ui.click('[data-action="wizard-step"][data-step="2"]');
     ui.click('[data-action="add-ins"]');
     assert.ok(ui.q('[data-ins-row]'), '应新增一条指令行');
@@ -348,7 +491,44 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       `yaml 筛选片应命中 3 个 yaml/yml 文件，实际：${ui.rows().join(', ')}`,
     );
     ui.type('#filter-input', '');
-    await until(() => ui.rows().length === 5, '恢复全部文件');
+    await until(() => ui.rows().length === 3, '恢复 3 个 yml/yaml');
+  });
+
+  /* ── 0.2.2：切换目标格式 / Sed 时，可见文件一律按「可选」渲染，无灰显 ── */
+  await t.test('0.2.2 切 JSON/YAML/Sed 时可选文件样式一致（无置灰）', async () => {
+    // 回到第 ① 步并清空筛选
+    ui.click('[data-action="wizard-step"][data-step="1"]');
+    ui.click('[data-action="clear-filter"]');
+    await until(() => ui.rows().length >= 3, 'YAML 模式列出 3 个 yml');
+
+    function assertNoGray(label: string) {
+      const rows = [...ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file')];
+      assert.ok(rows.length > 0, `${label} 应有可见文件行`);
+      for (const r of rows) {
+        assert.ok(!r.classList.contains('is-noncandidate'),
+          `${label} 不应有 is-noncandidate 灰显：${r.getAttribute('data-path')}`);
+        assert.ok(!r.classList.contains('is-locked'),
+          `${label} 可见文件不应是 locked 灰显：${r.getAttribute('data-path')}`);
+        const tri = r.querySelector('.tri');
+        assert.notEqual(tri?.getAttribute('aria-disabled'), 'true',
+          `${label} 勾选框应可选：${r.getAttribute('data-path')}`);
+      }
+    }
+    assertNoGray('YAML');
+
+    // 切到 JSON：只剩 .json，也应正常可选（不置灰）
+    ui.click('[data-action="target-format"][data-format="json"]');
+    await until(() => ui.rows().length === 1, 'JSON 模式只显示 1 个 json');
+    assertNoGray('JSON');
+
+    // 切到 Sed：全部后缀都可选，且都不灰显
+    ui.click('[data-action="target-format"][data-format="sed"]');
+    await until(() => ui.rows().length >= 5, 'Sed 模式应显示全部 5 个文件');
+    assertNoGray('Sed');
+
+    // 恢复 YAML，供后续用例继续
+    ui.click('[data-action="target-format"][data-format="yaml"]');
+    await until(() => ui.rows().length === 3 && ui.rows().every((p) => /\.ya?ml$/i.test(p)), '恢复 YAML 模式');
   });
 
   /* ── bug 5：修改值后立即生效 ────────────────────────────── */
@@ -365,10 +545,30 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       `改值后变更计数应为 3，概览：${ui.q('#ov-stats')?.textContent}`,
     );
 
-    // 第 ③ 步结果区要渲染出变更文件
+    // 第 ③ 步结果区要渲染出变更文件（0.2.1：只读树状目录，无勾选框）
     assert.ok(!ui.q('#sec-results')?.classList.contains('wizard-hidden'), '第 ③ 步应显示结果区');
-    const changesGroup = ui.q('#group-changes')?.textContent ?? '';
-    assert.match(changesGroup, /3/, `变更文件分组应列出 3 个文件，实际「${changesGroup.slice(0, 200)}」`);
+    const resultTree = ui.q('#group-changes');
+    assert.ok(resultTree, '应有变更文件树容器');
+    assert.equal(resultTree?.getAttribute('role'), 'tree', '结果树应使用 tree role 与主树统一');
+    const fileRows = ui.win.document.querySelectorAll('#group-changes .tree-row.is-file');
+    assert.equal(fileRows.length, 3, `结果树应列出 3 个变更文件，实际 ${fileRows.length}`);
+    assert.equal(
+      ui.win.document.querySelectorAll('#group-changes .tri').length, 0,
+      '结果树不应有任何勾选框（只读）',
+    );
+    const toggle = ui.q('#group-changes [data-action="result-toggle-dir"]') as HTMLElement | null;
+    assert.ok(toggle, '结果树目录应可展开/折叠');
+    const dirRows = ui.win.document.querySelectorAll('#group-changes .tree-row.is-dir').length;
+    assert.ok(dirRows > 0, '结果树应渲染目录层级');
+    // 折叠后文件行减少、再展开恢复
+    toggle!.click();
+    const collapsed = ui.win.document.querySelectorAll('#group-changes .tree-row.is-file').length;
+    assert.ok(collapsed < 3, `折叠目录后文件行应减少，实际 ${collapsed}`);
+    (ui.q('#group-changes [data-action="result-toggle-dir"]') as HTMLElement).click();
+    await until(
+      () => ui.win.document.querySelectorAll('#group-changes .tree-row.is-file').length === 3,
+      '再次展开应恢复 3 个文件行',
+    );
 
     // 预览 diff：显示的必须是新值
     ui.click('[data-action="preview-all"]');
@@ -376,6 +576,18 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     const diffText = ui.q('#results-body')?.textContent ?? '';
     assert.match(diffText, /new:v3/, 'diff 预览应包含新值 new:v3');
     assert.doesNotMatch(diffText.slice(0, 4000), /new:v2/, 'diff 预览不应残留旧值');
+
+    // 0.2.2：双击结果树文件行 → 右侧 Diff 视图即时切换到该文件
+    const treeFiles = [...ui.win.document.querySelectorAll('#group-changes .tree-row.is-file')];
+    assert.ok(treeFiles.length >= 2, '结果树应有多个变更文件可切换');
+    const second = treeFiles[1] as HTMLElement;
+    const secondPath = second.getAttribute('data-rpath') || '';
+    const secondUri = second.getAttribute('data-diff-uri') || '';
+    assert.ok(secondUri, '结果树文件行应带 data-diff-uri 用于切换 diff');
+    second.dispatchEvent(new ui.win.MouseEvent('dblclick', { bubbles: true }));
+    const title = ui.q('#results-body .diff-title')?.textContent ?? '';
+    assert.ok(title.includes(secondPath.split('/').pop() || secondPath),
+      `双击后右侧 Diff 标题应指向 ${secondPath}，实际「${title}」`);
 
     // 应用
     const applyBtn = ui.q('[data-action="apply"]') as HTMLElement | null;
@@ -429,6 +641,9 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       () => ui.rows().includes('nested/xs-ext.yml'),
       `切到工作区外目录后列出其文件，实际：${ui.rows().join(', ')}`,
     );
+    // 0.2.0：新目录文件默认不选，点全选加入修改列表
+    await selectAllVisible();
+    assert.equal(selectedCount(), '1', '外目录唯一文件应被选中');
 
     // 改值：第 ② 步输入新值后直接进第 ③ 步（防抖窗口内，考验 flushPending）
     ui.click('[data-action="wizard-step"][data-step="2"]');
@@ -489,6 +704,8 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       () => ui.rows().some((p) => p.startsWith('bulk/')),
       `恢复工作区根目录后应列出新建的 bulk 文件，实际：${ui.rows().join(', ')}`,
     );
+    // 0.2.0：把可见文件全部加入修改列表（含新建的 30 个 bulk）
+    await selectAllVisible();
 
     // 新增第二条指令：结构化删除 $.env（YAML）
     ui.click('[data-action="wizard-step"][data-step="2"]');
@@ -581,4 +798,113 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     const bulk0 = read('bulk/b00.yml');
     assert.equal(bulk0, 'image: old:v1\nenv: dev\n', 'bulk 文件应还原为应用前原文');
   });
+
+  /* ── 多级筛选：条件行 / AND-OR / 目录层级 / 只看已选 / Shift 范围 ── */
+  await t.test('多级筛选与选择逻辑优化', async () => {
+    ui.click('[data-action="wizard-step"][data-step="1"]');
+    ui.click('[data-action="clear-filter"]');
+    await until(() => ui.rows().length >= 30, '清除全部筛选后应列出全部 yml 文件');
+
+    // 条件行 1：xs1（子串）→ 只留 1 个文件
+    ui.click('[data-action="filter-add"]');
+    assert.ok(ui.q('.filter-cond-row'), '应新增一条筛选条件行');
+    ui.type('.filter-cond-row .cond-value', 'xs1');
+    await until(
+      () => ui.rows().length === 1 && /xs1\.yml/.test(ui.rows()[0]),
+      `单条 xs1 条件应只留 xs1.yml，实际：${ui.rows().join(', ')}`,
+    );
+    assert.ok(ui.q('.cond-count'), '条件行应显示实时命中数');
+
+    // 条件行 2：app.yaml；AND 下两个条件互斥 → 0 行
+    ui.click('[data-action="filter-add"]');
+    let condRows = [...ui.win.document.querySelectorAll('.filter-cond-row')];
+    assert.equal(condRows.length, 2, '应有两条条件行');
+    const val2 = condRows[1].querySelector('[data-filter-field="value"]') as HTMLInputElement;
+    val2.value = 'app.yaml';
+    val2.dispatchEvent(new ui.win.Event('input', { bubbles: true }));
+    await until(() => ui.rows().length === 0, `AND 下互斥条件应为 0 行，实际：${ui.rows().join(', ')}`);
+
+    // 切 OR → 两个文件都可见
+    ui.click('[data-action="filter-mode"][data-mode="or"]');
+    await until(
+      () => ui.rows().length === 2 && ui.rows().some((p) => /xs1\.yml/.test(p)) && ui.rows().some((p) => /app\.yaml/.test(p)),
+      `OR 下应同时看到两个文件，实际：${ui.rows().join(', ')}`,
+    );
+
+    // 排除条件：排除 app.yaml → 只剩 xs1.yml
+    ui.click('[data-action="filter-add"]');
+    condRows = [...ui.win.document.querySelectorAll('.filter-cond-row')];
+    const op3 = condRows[2].querySelector('[data-filter-field="op"]') as HTMLSelectElement;
+    op3.value = 'exclude';
+    op3.dispatchEvent(new ui.win.Event('change', { bubbles: true }));
+    condRows = [...ui.win.document.querySelectorAll('.filter-cond-row')];
+    const val3 = condRows[2].querySelector('[data-filter-field="value"]') as HTMLInputElement;
+    val3.value = 'app.yaml';
+    val3.dispatchEvent(new ui.win.Event('input', { bubbles: true }));
+    await until(
+      () => ui.rows().length === 1 && /xs1\.yml/.test(ui.rows()[0]),
+      `排除条件应移除 app.yaml，实际：${ui.rows().join(', ')}`,
+    );
+
+    // 目录层级聚焦：点树中目录的聚焦按钮，出现面包屑并收窄范围
+    const focusBtn = ui.q('#scope-tree [data-action="focus-dir"]') as HTMLElement | null;
+    assert.ok(focusBtn, '树目录行应有「逐级聚焦」按钮');
+    const focusDir = (focusBtn as HTMLElement).getAttribute('data-path') || '';
+    (focusBtn as HTMLElement).click();
+    await until(
+      () => ui.rows().every((p) => p.indexOf(focusDir + '/') === 0),
+      `聚焦后应只显示 ${focusDir} 下的文件，实际：${ui.rows().join(', ')}`,
+    );
+    assert.ok(ui.q('.crumb.is-active'), '应出现层级面包屑');
+    assert.ok(ui.q('[data-action="filter-crumb-clear"]'), '应可清除层级');
+    ui.click('[data-action="filter-crumb-clear"]');
+
+    // 只看已选：行数等于勾选行数
+    const onlySel = ui.q('[data-action="filter-only-selected"]') as HTMLInputElement | null;
+    assert.ok(onlySel, '应有「只看已选」开关');
+    (onlySel as HTMLInputElement).checked = true;
+    (onlySel as HTMLInputElement).dispatchEvent(new ui.win.Event('change', { bubbles: true }));
+    await until(
+      () => {
+        const rows = ui.rows().length;
+        const checked = ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file .tri[aria-checked="true"]').length;
+        return rows === checked;
+      },
+      '「只看已选」应只留下已勾选文件',
+    );
+    (onlySel as HTMLInputElement).checked = false;
+    (onlySel as HTMLInputElement).dispatchEvent(new ui.win.Event('change', { bubbles: true }));
+
+    // Shift 范围勾选：先点一行设锚点，再 Shift 点第三行，宿主应收到多条 select
+    ui.click('[data-action="clear-filter"]');
+    await until(() => ui.rows().length >= 30, '清除筛选后恢复全量 yml 列表');
+    const tris = [...ui.win.document.querySelectorAll('#scope-tree .tree-row.is-file .tri')];
+    assert.ok(tris.length >= 3, '应有多行可供范围选择');
+    (tris[0] as HTMLElement).click();
+    const before = stub.stubState.uiMessages.filter((m) => m.type === 'select').length;
+    (tris[2] as HTMLElement).dispatchEvent(new ui.win.MouseEvent('click', { bubbles: true, shiftKey: true }));
+    await until(
+      () => stub.stubState.uiMessages.filter((m) => m.type === 'select').length >= before + 3,
+      'Shift 范围勾选应批量下发 select',
+    );
+  });
+
+
+});
+
+
+/* ── 0.2.4：空 error-strip 常驻会露出「页面中上方玫红细线」 ── */
+test('0.2.4 无错误时 error-strip[hidden] 不占位、有错误时仍可见', () => {
+  const css = fs.readFileSync(path.join(repoRoot, 'src', 'ui', 'panel.css'), 'utf8');
+  const html = `<!DOCTYPE html><html><head><style>${css}</style></head><body>
+    <div class="error-strip" id="err-hidden" hidden></div>
+    <div class="error-strip" id="err-shown"></div>
+  </body></html>`;
+  const dom = new JSDOM(html, { pretendToBeVisual: true });
+  const w = dom.window;
+  const hidden = w.getComputedStyle(w.document.getElementById('err-hidden')).display;
+  const shown = w.getComputedStyle(w.document.getElementById('err-shown')).display;
+  assert.equal(hidden, 'none', '带 hidden 的空错误条必须 display:none，否则常驻露出玫红 border-bottom');
+  assert.equal(shown, 'flex', '真正有错误时错误条仍应可见（提示功能不回退）');
+  w.close();
 });

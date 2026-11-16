@@ -4,27 +4,60 @@
 
 安装插件即可使用全部功能，**不需要**在机器上额外安装 Node.js、npm、jq、yq、sed、Git Bash、Python 或任何外部命令行工具。JSON/JSONC 由 `jsonc-parser`、YAML 由 `yaml` 在插件内解析，sed 风格替换由进程内 JS 正则执行；所有依赖随 `.vsix` 一起分发。
 
-> 当前版本 0.1.5：三步向导式交互（① 选择文件 → ② 编辑值 → ③ 预览并应用）、双击文件弹框预览源文件、树勾选对勾修复、界面视觉重构；修复 0.1.2 反馈的 5 个缺陷（选择目录弹窗、`.yml` 识别、列表显示、路径 glob 筛选、改值后生效）；**点「应用」直接保存，不再弹逐条确认**（文件再多也能一键完成，误改一次 Ctrl+Z 撤销）。
-> **懒加载**：打开面板不扫描任何文件；设定目录 / 过滤条件后点「扫描文件」才扫描，勾选与筛选变化只做轻量重算（不重复 `findFiles`、不重复读盘）。
-> **仅 `Ctrl+Alt+B` 启动编辑器 Tab 面板**；已移除 Activity Bar 侧边栏图标与视图。
-> `npm run test:integration` 在真实 VS Code（Linux headless / xvfb-run）跑通全部用例；单测 76/76（含「选文件 → 改值 → 预览 → 应用」端到端流程）。
+> 当前版本 0.2.4：三步向导式交互（① 选择文件 → ② 编辑值 → ③ 预览并应用）、双击文件弹框预览源文件、树勾选对勾修复、界面视觉重构；修复 0.1.2 反馈的 5 个缺陷（选择目录弹窗、`.yml` 识别、列表显示、路径 glob 筛选、改值后生效）；**点「应用」直接保存，不再弹逐条确认**（文件再多也能一键完成，误改一次 Ctrl+Z 撤销）。
+> **懒加载 + 自动载入**：打开面板不扫描任何文件；设定目录 / 过滤条件后自动扫描一次（无需点按钮），勾选与筛选变化只做轻量重算（不重复 `findFiles`、不重复读盘）；扫描期间不再逐文件广播进度。
+> **默认 `Ctrl+Alt+B`，备用 `Ctrl+Alt+Shift+B`** 启动编辑器 Tab 面板；已移除 Activity Bar 侧边栏图标与视图。
+> `npm run test:integration` 在真实 VS Code（Linux headless / xvfb-run）跑通全部用例；单测 108/108（含「选文件 → 改值 → 预览 → 应用」端到端流程）。
 > 仍需人工：四主题目视走查、键盘焦点环、300px 窄宽度、三步向导完整交互冒烟；如实记录见 `UI-DELIVERY.md`。
 
 ## 它能做什么
 
 - **结构化引擎**：按路径对 JSON/JSONC、YAML/YML 批量 `set` / `delete` / `insert`，最小补丁写回，注释、键序、缩进、引号风格、行尾逐字节保留。
 - **文本引擎**：`s/…/…/flags` 替换、`/pat/d` 删除行，适用于所有文本类型。
-- **文件范围三层管道**：目录/路径选择 → 扩展名策略（结构化固定只读、文本全部或自定义）→ 树筛选与跨目录批量勾选、逐个审阅。
+- **新增 key 保持原格式**：JSON/YAML 新增键自动沿用文件原有缩进（2/4空格/tab/CRLF/单行内联），只写插入片段、不全量格式化、不动任何已有字符；无需用户选模式，天然最小修改。
+- **第③步 Diff 交互**：双击左侧变更文件树即时切换右侧 Diff；删除命令以 `−` 行清晰体现；Diff 预览填满右侧区域。
+- **格式切换样式一致**：切 JSON/YAML/Sed 时，可选文件一律按可选样式渲染，不再残留置灰。
+- **首开异步加载**：打开面板即后台异步扫描当前项目根目录并刷新树，不阻塞页面渲染。
+- **结构化模式隐藏无关文件**：JSON 只显示 `.json/.jsonc`、YAML 只显示 `.yaml/.yml`（不再灰显），不含可见文件的空目录也不显示；「显示全部」高级开关可临时查看其它后缀。
+- **第③步只读结果树**：变更文件以树状目录展示，不可勾选，只可展开/折叠，视觉与第①步统一。
+- **第①步单一文件选择器**：选目录（默认工作区）→ 输入过滤条件 → 树里批量勾选 → 确认范围，一条动线完成。**打开/搜索时默认全部不选中**，点「全选匹配」把当前结果加入修改列表，再点变「取消全选」；「清空全部」可一键回到全不选。换筛选条件**不清空已选**，可多次全选逐步追加；只有勾选的文件才进入修改列表并应用。目标格式固定可修改后缀（YAML `.yaml/.yml`、JSON `.json/.jsonc`，其它后缀标注「不可选」）。高级选项收进默认折叠的「更多」。
 - **扫描根可切换**：默认以 VS Code 打开的工作区根目录扫描，点「选择目录…」可改到任意目录（含工作区之外），随时「恢复工作区根目录」。
 - **筛选支持路径 glob**：`aaa/bbbb/xs*.yml`、`xs*.yml`、`ext:yaml,yml`、`!legacy` 均可；筛选只决定显示/批量范围，勾选始终以复选框为准。
-- **统一预览**：每条命中一个 diff，勾选后一次 `workspace.applyEdit` 应用，**点应用即全部保存（不弹确认）**，误改可点「一键回退」或按 Ctrl+Alt+Z 整体还原；应用前做内容 hash 二次校验。
+- **三步式底栏**：第①/②步底栏只给「上一步 / 下一步」引导；「预览全部 Diff / 应用 / 一键回退」只在第③步出现。每条命中一个 diff，勾选后一次 `workspace.applyEdit` 应用，**点应用即全部保存（不弹确认）**，误改可点「一键回退」或按 Ctrl+Alt+Z 整体还原；应用前做内容 hash 二次校验。
 - **表达式集**：`.structedit.json`（v3）导入导出、团队共享，读取旧版自动升级。
 
 ## 命令
 
 | 命令 | 说明 |
 |---|---|
-| `Batch Replace for JSON & YAML: Open Batch Edit Panel` | 打开批量编辑面板（**唯一入口**：命令面板或 `Ctrl+Alt+B`） |
+| `Batch Replace for JSON & YAML: Open Batch Edit Panel` | 打开批量编辑面板（命令面板、`Ctrl+Alt+B` 或 `Ctrl+Alt+Shift+B`） |
+
+### 快捷键与自定义
+
+| 命令 | 默认按键 | 说明 |
+| --- | --- | --- |
+| `structedit.openPanel` | `Ctrl+Alt+B` | 打开批量编辑面板（主） |
+| `structedit.openPanel` | `Ctrl+Alt+Shift+B` | 备用键：主键被占用时仍可用 |
+| `structedit.undoLast` | `Ctrl+Alt+Z` | 一键回退上次批量修改 |
+
+**当两个默认键都冲突时**，用 VS Code 自带的键盘快捷方式自定义（无需改扩展）：
+`文件 → 首选项 → 键盘快捷方式`，搜索 `Batch Replace`，把 `structedit.openPanel` 绑定到任意组合；
+或直接编辑 `keybindings.json`（命令面板：`Preferences: Open Keyboard Shortcuts (JSON)`）：
+
+```json
+[
+  { "key": "ctrl+alt+b", "command": "-structedit.openPanel" },
+  { "key": "ctrl+alt+shift+b", "command": "-structedit.openPanel" },
+  { "key": "ctrl+shift+alt+r", "command": "structedit.openPanel" }
+]
+```
+
+前面两行的 `-` 前缀用于移除默认绑定，第三行绑定你自己的组合。
+也可用设置项 `batchReplace.enableAltShortcut`（默认 `true`）单独关闭备用键：
+
+```json
+{ "batchReplace.enableAltShortcut": false }
+```
 | `Batch Replace for JSON & YAML: Use Cursor Path` | 编辑器右键：光标路径填入面板（结构化） |
 | `Batch Replace for JSON & YAML: Use Selection as Pattern` | 编辑器右键：选区转义为文本 pattern |
 | `Batch Replace for JSON & YAML: Apply Expression Set File` | 直接应用某个 `.structedit.json` |

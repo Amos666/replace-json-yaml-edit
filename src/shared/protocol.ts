@@ -163,6 +163,7 @@ export type BatchOp =
   | 'deselectAll'
   | 'invert'
   | 'keepOnly'
+  | 'clearAll'
   | 'clearFilter'
   | 'onlyApplicable'
   | 'showAll'

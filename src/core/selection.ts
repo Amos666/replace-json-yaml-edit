@@ -3,7 +3,9 @@ import { globMatch } from './extensionPolicy.ts';
 import { parseTreeFilter } from './treeFilter.ts';
 
 export function createSelection(
-  baseInclude: string[] = ['**/*'],
+  // 0.2.0：默认全不选。选择集完全由 overrides.add 累积决定，
+  // 换筛选条件不清空已选，用户可多次「全选匹配」逐步追加。
+  baseInclude: string[] = [],
   baseExclude: string[] = [],
   filterRaw = '',
 ): SelectionState {
@@ -50,7 +52,7 @@ export function clearOverrides(state: SelectionState): void {
   state.overrides.remove.clear();
 }
 
-export type BatchOp = 'selectAll' | 'deselectAll' | 'invert' | 'keepOnly';
+export type BatchOp = 'selectAll' | 'deselectAll' | 'invert' | 'keepOnly' | 'clearAll';
 
 /** §6.4 批量操作只作用于命中集 H，不改变 H 之外已勾选项 */
 export function applyBatch(
@@ -60,6 +62,13 @@ export function applyBatch(
   op: BatchOp,
 ): SelectionState {
   const hitSet = new Set(hits);
+  if (op === 'clearAll') {
+    // 清空全部选择，回到「默认全不选」的初始状态（含视图外累积项）
+    state.baseInclude = [];
+    state.baseExclude = [];
+    clearOverrides(state);
+    return state;
+  }
   if (op === 'keepOnly') {
     for (const uri of all) {
       if (!hitSet.has(uri)) setSelected(uri, false, state);

@@ -57,10 +57,29 @@
   <!-- ── Content: three sections ───────────────────────────── -->
   <main class="content" id="content">
 
-    <!-- 区块① 指令 -->
-    <section class="section" id="sec-instructions" aria-labelledby="h-instructions">
+    <!-- 区块① 文件范围（与向导 ①②③ 顺序一致） -->
+    <section class="section" id="sec-scope" aria-labelledby="h-scope">
       <div class="sec-head">
-        <h2 class="sec-title" id="h-instructions"><span class="codicon codicon-list-ordered" aria-hidden="true"></span>指令</h2>
+        <h2 class="sec-title" id="h-scope"><span class="sec-step" aria-hidden="true">1</span><span class="codicon codicon-files" aria-hidden="true"></span>选要修改文件<span class="sec-sub">选择目录、过滤并勾选文件</span></h2>
+        <div class="sec-head-actions" id="scope-head-actions"></div>
+      </div>
+      <div class="sec-body" id="scope-body" aria-disabled="false">
+        <div class="state-skeleton" aria-hidden="true">
+          <div class="skel-line" style="width:70%"></div>
+          <div class="skel-line" style="width:96%"></div>
+          <div class="skel-line" style="width:88%"></div>
+          <div class="skel-line" style="width:94%"></div>
+          <div class="skel-line" style="width:80%"></div>
+        </div>
+      </div>
+      <div class="review-card" id="review-card" hidden></div>
+      <div class="step-footer" id="scope-footer" role="group" aria-label="第①步落点"></div>
+    </section>
+
+    <!-- 区块② 指令 -->
+    <section class="section wizard-hidden" id="sec-instructions" aria-labelledby="h-instructions">
+      <div class="sec-head">
+        <h2 class="sec-title" id="h-instructions"><span class="sec-step" aria-hidden="true">2</span><span class="codicon codicon-list-ordered" aria-hidden="true"></span>写修改的命令<span class="sec-sub">新增 / 修改 / 删除 要写入的值</span></h2>
         <div class="sec-head-actions">
           <div class="tabs" role="tablist" aria-label="引擎" id="engine-tabs">
             <button type="button" class="tab" role="tab" data-action="engine-tab" data-engine="structured" aria-selected="true" id="tab-structured">结构化</button>
@@ -75,30 +94,13 @@
           <div class="skel-line" style="width:90%"></div>
         </div>
       </div>
-    </section>
-
-    <!-- 区块② 文件范围 -->
-    <section class="section" id="sec-scope" aria-labelledby="h-scope">
-      <div class="sec-head">
-        <h2 class="sec-title" id="h-scope"><span class="codicon codicon-files" aria-hidden="true"></span>文件范围</h2>
-        <div class="sec-head-actions" id="scope-head-actions"></div>
-      </div>
-      <div class="sec-body" id="scope-body" aria-disabled="false">
-        <div class="state-skeleton" aria-hidden="true">
-          <div class="skel-line" style="width:70%"></div>
-          <div class="skel-line" style="width:96%"></div>
-          <div class="skel-line" style="width:88%"></div>
-          <div class="skel-line" style="width:94%"></div>
-          <div class="skel-line" style="width:80%"></div>
-        </div>
-      </div>
-      <div class="review-card" id="review-card" hidden></div>
+      <div class="step-footer" id="ins-footer" role="group" aria-label="第②步落点"></div>
     </section>
 
     <!-- 区块③ 结果 -->
-    <section class="section" id="sec-results" aria-labelledby="h-results">
+    <section class="section wizard-hidden" id="sec-results" aria-labelledby="h-results">
       <div class="sec-head">
-        <h2 class="sec-title" id="h-results"><span class="codicon codicon-checklist" aria-hidden="true"></span>结果</h2>
+        <h2 class="sec-title" id="h-results"><span class="sec-step" aria-hidden="true">3</span><span class="codicon codicon-checklist" aria-hidden="true"></span>应用执行<span class="sec-sub">核对 Diff 并一键应用</span></h2>
         <div class="sec-head-actions" id="results-head-actions"></div>
       </div>
       <div class="sec-body" id="results-body" aria-disabled="false">

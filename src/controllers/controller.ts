@@ -67,6 +67,9 @@ export class PanelController {
   private filterTimer: ReturnType<typeof setTimeout> | undefined;
   private scanGeneration = 0;
   private scanCts: vscode.CancellationTokenSource | undefined;
+  /** 首屏懒加载：用户首次设定过滤/范围后自动扫描一次，代替已删除的「扫描文件」按钮。 */
+  private autoScanDone = false;
+  private autoScanTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -182,6 +185,7 @@ export class PanelController {
   private cancelScan(): void {
     if (this.scanTimer) { clearTimeout(this.scanTimer); this.scanTimer = undefined; }
     if (this.filterTimer) { clearTimeout(this.filterTimer); this.filterTimer = undefined; }
+    if (this.autoScanTimer) { clearTimeout(this.autoScanTimer); this.autoScanTimer = undefined; }
     this.scanGeneration += 1;
     this.scanCts?.cancel();
     this.scanCts?.dispose();
@@ -195,7 +199,7 @@ export class PanelController {
    */
   private async recomputePlans(): Promise<void> {
     if (!this.state.entries.length) {
-      this.postState('input', '请先在「① 选择文件」点「扫描文件」载入文件列表。');
+      // 不再提示用户点按钮：设定过滤条件/目录后由 scheduleAutoScan 自动载入。
       return;
     }
     const cfg = readConfig();
@@ -235,6 +239,21 @@ export class PanelController {
     await this.recomputePlans();
   }
 
+  /**
+   * 用户首次设定过滤条件 / 目录范围后自动扫描一次（0.1.7：删除「扫描文件」按钮）。
+   * 首屏 ready 仍不扫描；只在从未加载过文件列表时触发，且 250ms 防抖合并连续输入。
+   */
+  private scheduleAutoScan(): void {
+    if (this.autoScanDone || this.state.entries.length > 0) return;
+    if (this.autoScanTimer) clearTimeout(this.autoScanTimer);
+    this.autoScanTimer = setTimeout(() => {
+      this.autoScanTimer = undefined;
+      if (this.autoScanDone || this.state.entries.length > 0) return;
+      this.autoScanDone = true;
+      void this.doScan({ refreshFiles: true, clearCache: true, sendInit: false });
+    }, 250);
+  }
+
   private scheduleFilter(): void {
     if (this.filterTimer) clearTimeout(this.filterTimer);
     this.filterTimer = setTimeout(() => {
@@ -244,8 +263,9 @@ export class PanelController {
     }, 150);
   }
 
-  /** 显式扫描：用户点「扫描文件」→ findFiles → runScan → tree/state，含进度与取消。 */
+  /** 扫描：findFiles → runScan → tree/state。入口为自动扫描 / 选目录 / 手动刷新图标。 */
   private async doScan(opts: ScanOptions): Promise<void> {
+    this.autoScanDone = true;
     // 取消仍在进行的扫描（generation + findFiles token），避免旧结果覆盖新状态。
     this.scanCts?.cancel();
     this.scanCts?.dispose();
@@ -254,20 +274,13 @@ export class PanelController {
     const cancelled = (): boolean => gen !== this.scanGeneration;
 
     const cfg = readConfig();
-    // 没有文件列表且不是显式刷新 → 无效扫描，直接提示（页面首屏完全不扫描）。
-    if (!opts.refreshFiles && this.state.entries.length === 0) {
-      this.postState('input', '请先在「① 选择文件」设定范围并点「扫描文件」。');
-      return;
-    }
+    // 没有文件列表且不是显式刷新 → 无效扫描，静默返回（页面首屏完全不扫描）。
+    if (!opts.refreshFiles && this.state.entries.length === 0) return;
 
     this.state.phase = 'scanning';
-    this.post({
-      type: 'state',
-      payload: {
-        phase: 'scanning',
-        counts: { ...this.state.counts, scanned: 0, total: this.state.entries.length },
-      },
-    });
+    // 0.1.7 反馈：删掉「就绪 N/M」数量对比后不再逐文件广播 state，
+    // 扫描期间只发一次 phase，跑完再 postTree + postState，显著减少消息量。
+    this.postState('scanning');
 
     try {
       if (opts.refreshFiles) {
@@ -280,13 +293,7 @@ export class PanelController {
       if (cancelled()) return;
       if (opts.clearCache) this.textCache.clear();
 
-      await runScan(this.state, cfg, this.textCache, cancelled, (scanned, total) => {
-        if (cancelled()) return;
-        this.post({
-          type: 'state',
-          payload: { phase: 'scanning', counts: { ...this.state.counts, scanned, total } },
-        });
-      });
+      await runScan(this.state, cfg, this.textCache, cancelled);
       if (cancelled()) return;
 
       this.state.phase = 'results';
@@ -331,22 +338,21 @@ export class PanelController {
         case 'ready': {
           if (client.ready) return;
           client.ready = true;
-          // 懒加载：首屏绝不 findFiles / 读盘，只下发空 init + input 态提示。
-          // 用户设定目录与过滤条件后，由「扫描文件」按钮的 scan 消息触发唯一一次扫描。
+          // 先同步下发 init / state / undoState，页面立即可渲染（首屏不阻塞）。
           this.postTo(client, { type: 'init', payload: toInitPayload(this.state) });
           this.postTo(client, {
             type: 'state',
-            payload: {
-              phase: 'input',
-              counts: this.state.counts,
-              message: '页面已就绪，尚未扫描任何文件。请在「① 选择文件」设定范围后点「扫描文件」。',
-            },
+            payload: { phase: 'input', counts: this.state.counts },
           });
           this.postTo(client, {
             type: 'undoState',
             payload: { available: this.lastSnapshot.length > 0, files: this.lastSnapshot.length },
           });
           for (const fn of client.queue.splice(0)) fn();
+          // 0.2.1 反馈：用户第一次打开插件、未自选目录时，异步后台加载当前项目
+          // 根目录并刷新树状目录（250ms 防抖 + 只扫一次 + 无指令时不读盘）。
+          // 用 setTimeout 排在消息下发之后，不影响页面加载。
+          if (!this.state.scopeRoot) this.scheduleAutoScan();
           break;
         }
         case 'setInstructions': this.onSetInstructions(msg.instructions); break;
@@ -418,6 +424,7 @@ export class PanelController {
       case 'deselectAll':
       case 'invert':
       case 'keepOnly':
+      case 'clearAll':
         applyBatch(this.state.selection, relHits, this.state.allRelPaths, op);
         break;
       case 'selectDirHits':
@@ -453,6 +460,7 @@ export class PanelController {
       this.exitReview('筛选条件已变化，已退出逐个审阅，请重新进入。');
     }
     this.scheduleFilter(); // 150ms 防抖，仅重算命中高亮，不重新 findFiles
+    this.scheduleAutoScan(); // 首次设定条件时自动载入一次文件列表
   }
 
   private onSetGlob(include: string[], exclude: string[]): void {
@@ -460,14 +468,16 @@ export class PanelController {
     this.state.selection.treeFilter = this.state.filter;
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
     this.scheduleRecompute();
-    this.postState(this.state.phase, '文件范围已更新；点「扫描文件」可按新范围重新载入列表。');
+    this.scheduleAutoScan();
+    this.postState(this.state.phase, '文件范围已更新，将自动载入文件列表。');
   }
 
   private onResetToGlob(): void {
     clearOverrides(this.state.selection);
     this.state.equivalentGlob = buildEquivalentGlob(this.state);
     this.scheduleRecompute();
-    this.postState(this.state.phase, '已重置为 glob；点「扫描文件」可重新载入列表。');
+    this.scheduleAutoScan();
+    this.postState(this.state.phase, '已重置为 glob，将自动载入文件列表。');
   }
 
   /* ── 选择目录（bug1）：默认工作区根目录，可弹窗改到任意目录 ── */

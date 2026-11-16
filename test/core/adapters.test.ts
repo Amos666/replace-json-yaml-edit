@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { parseAllDocuments } from 'yaml';
 import {
   planJsonc,
   planYaml,
   planText,
+  planFile,
   applyPatches,
   reversePatches,
 } from '../../src/core/index.ts';
@@ -157,4 +159,240 @@ test('§10.1 补丁求逆逐字节还原', () => {
   const after = applyPatches(before, r.patches);
   assert.equal(after, 'x = baz\nbaz = bar\n');
   assert.equal(applyPatches(after, reversePatches(before, r.patches)), before);
+});
+
+/* ── 0.2.1：路径穿过标量父节点时不抛异常，降级为跳过 + 明确说明 ── */
+test('0.2.1 JSON insert 到标量子键不抛错，跳过并记录原因', () => {
+  const before = '{\n  "name": "demo",\n  "image": "old:v1",\n  "config": { "host": "localhost" }\n}\n';
+  const mk = (kind: 'set' | 'delete' | 'insert', path: string) =>
+    structured('i', 'json', kind, path, 'x', 'string');
+  for (const path of ['$.name.foo', '$.image.a.b']) {
+    for (const kind of ['insert', 'set', 'delete'] as const) {
+      const r = planJsonc(before, [mk(kind, path)]);
+      assert.ok(Array.isArray(r.parseErrors), `${kind} ${path} 应给出跳过说明`);
+      assert.match(r.parseErrors!.join(' '), /父节点不是对象|无法写入/, `${kind} ${path} 说明应指明标量父节点`);
+      assert.equal(applyPatches(before, r.patches), before, `${kind} ${path} 不应产生补丁`);
+    }
+  }
+  // 正常路径仍照常工作
+  const ok = planJsonc(before, [structured('i2', 'json', 'insert', '$.config.port', '8080', 'number')]);
+  assert.equal(ok.patches.length, 1);
+  assert.match(applyPatches(before, ok.patches), /"port": 8080/);
+});
+
+test('0.2.1 值解析失败不抛错，跳过并记录原因', () => {
+  const before = '{ "n": 1 }\n';
+  const r = planJsonc(before, [structured('i', 'json', 'set', '$.n', 'not-a-number', 'number')]);
+  assert.ok(r.parseErrors?.length, '非法数值应被记录而非抛出');
+  assert.match(r.parseErrors!.join(' '), /无法解析|值无法解析/);
+});
+
+test('0.2.1 planFile 遇到标量父节点路径不抛异常，只记账跳过', () => {
+  const before = '{\n  "name": "demo",\n  "config": { "host": "localhost" }\n}\n';
+  const ins = [
+    structured('i1', 'json', 'insert', '$.name.foo', 'x', 'string'),
+    structured('i2', 'json', 'set', '$.config.host', 'newhost', 'string'),
+  ];
+  // planFile 是 core 层的统一入口，必须不抛，且正常指令仍产生补丁
+  const plan = planFile(before, 'app.json', ins);
+  assert.equal(plan.patches.length, 1, '正常 set 指令应仍产生 1 处补丁');
+  assert.ok(plan.parseErrors?.some((e) => /父节点|无法写入/.test(e)), '标量父节点路径应被记录为跳过');
+  assert.match(applyPatches(before, plan.patches), /newhost/);
+});
+
+/* ── 0.2.2：新增 key 沿用原文件缩进，最小修改、不全量格式化 ── */
+test('0.2.2 JSON 新增 key 沿用 2/4 空格与 tab 缩进，不改已有内容', () => {
+  const cases: Array<[string, string, string]> = [
+    ['2空格', '{\n  "a": 1,\n  "b": 2\n}\n', '{\n  "a": 1,\n  "b": 2,\n  "c": 3\n}\n'],
+    ['4空格', '{\n    "a": 1,\n    "b": 2\n}\n', '{\n    "a": 1,\n    "b": 2,\n    "c": 3\n}\n'],
+    ['tab', '{\n\t"a": 1,\n\t"b": 2\n}\n', '{\n\t"a": 1,\n\t"b": 2,\n\t"c": 3\n}\n'],
+    ['单行内联', '{ "a": 1, "b": 2 }\n', '{ "a": 1, "b": 2, "c": 3 }\n'],
+  ];
+  for (const [label, before, expected] of cases) {
+    const r = planJsonc(before, [structured('i', 'json', 'insert', '$.c', '3', 'number')]);
+    assert.equal(r.patches.length, 1, `${label} 应产生 1 处补丁`);
+    assert.equal(applyPatches(before, r.patches), expected, `${label} 新增 key 缩进应与原文件一致`);
+    // 最小修改：补丁是纯插入（start===end），且 newText 不含任何已有 key 名
+    assert.equal(r.patches[0].start, r.patches[0].end, `${label} 应只插入、不替换已有内容`);
+  }
+});
+
+test('0.2.2 JSON 嵌套对象新增 key 沿用父级缩进', () => {
+  const before = '{\n  "cfg": {\n    "host": "x"\n  }\n}\n';
+  const r = planJsonc(before, [structured('i', 'json', 'insert', '$.cfg.port', '8080', 'number')]);
+  assert.equal(applyPatches(before, r.patches), '{\n  "cfg": {\n    "host": "x",\n    "port": 8080\n  }\n}\n');
+});
+
+test('0.2.2 JSON CRLF 文件新增 key 不混用换行符', () => {
+  const before = '{\r\n  "a": 1,\r\n  "b": 2\r\n}\r\n';
+  const r = planJsonc(before, [structured('i', 'json', 'insert', '$.c', '3', 'number')]);
+  const after = applyPatches(before, r.patches);
+  assert.equal(after, '{\r\n  "a": 1,\r\n  "b": 2,\r\n  "c": 3\r\n}\r\n');
+  assert.ok(!/(^|[^\r])\n/.test(after.replace(/\r\n/g, '')), '不应出现孤立 LF');
+});
+
+test('0.2.2 YAML 新增 key 沿用嵌套缩进；末尾无换行时补换行不挤行', () => {
+  // 嵌套 2/4 空格
+  for (const [ind, expected] of [
+    ['  ', 'server:\n  host: localhost\n  port: 8080\n  timeout: 30\n'],
+    ['    ', 'server:\n    host: localhost\n    port: 8080\n    timeout: 30\n'],
+  ] as Array<[string, string]>) {
+    const before = `server:\n${ind}host: localhost\n${ind}port: 8080\n`;
+    const r = planYaml(before, [structured('i', 'yaml', 'insert', '$.server.timeout', '30', 'number')]);
+    assert.equal(applyPatches(before, r.patches), expected);
+  }
+  // 末尾无换行
+  const noNl = 'server:\n  host: localhost';
+  const r2 = planYaml(noNl, [structured('i', 'yaml', 'insert', '$.server.port', '30', 'number')]);
+  assert.equal(applyPatches(noNl, r2.patches), 'server:\n  host: localhost\n  port: 30\n');
+});
+
+/* ── 0.2.2：删除命令必须在 diff 中体现为 − 行 ── */
+test('0.2.2 删除命令的 diff 含 remove 行（− 体现删除）', () => {
+  const before = 'name: demo\nimage: old:v1\nenv: dev\nconfig:\n  host: localhost\n';
+  const plan = planFile(before, 'a.yaml', [structured('d', 'yaml', 'delete', '$.env')]);
+  const after = applyPatches(before, plan.patches);
+  assert.ok(!/env: dev/.test(after), '删除后 env 行应消失');
+  // 用与宿主 makeFileDiff 相同的 diffLines 算法（此处内联等价实现校验 remove 行）
+  const bl = before.split('\n');
+  const al = after.split('\n');
+  let start = 0;
+  while (start < bl.length && start < al.length && bl[start] === al[start]) start += 1;
+  let eb = bl.length - 1;
+  let ea = al.length - 1;
+  while (eb >= start && ea >= start && bl[eb] === al[ea]) { eb -= 1; ea -= 1; }
+  const removed: string[] = [];
+  for (let i = start; i <= eb; i += 1) removed.push(bl[i]);
+  assert.ok(removed.includes('env: dev'), `删除行应作为 remove 出现在 diff：${JSON.stringify(removed)}`);
+});
+
+/* ── 0.2.3：深层路径新增、数组父降级、多命令顺序与缩进 ── */
+test('0.2.3 深层路径中间段不存在：创建嵌套对象、键序与逐层缩进正确', () => {
+  const before = '{\n  "config": {\n    "host": "localhost"\n  }\n}\n';
+  const r = planJsonc(before, [structured('i', 'json', 'insert', '$.config.bbb.aa', '33333', 'number')]);
+  assert.equal(r.patches.length, 1, '应产生 1 处纯插入补丁');
+  assert.equal(r.patches[0].start, r.patches[0].end, '只插入不替换');
+  assert.equal(applyPatches(before, r.patches),
+    '{\n  "config": {\n    "host": "localhost",\n    "bbb": {\n      "aa": 33333\n    }\n  }\n}\n');
+});
+
+test('0.2.3 顶层两级不存在：逐层嵌套、每层 +2 缩进', () => {
+  const before = '{ "a": 1 }\n';
+  const r = planJsonc(before, [structured('i', 'json', 'insert', '$.new.x.y', '9', 'number')]);
+  assert.equal(applyPatches(before, r.patches), '{ "a": 1, "new": {"x":{"y":9}} }\n');
+});
+
+test('0.2.3 数组父节点用字符串键：降级为追加对象元素，不再报错跳过', () => {
+  const before = '{\n  "tags": [\n    "a",\n    "b"\n  ]\n}\n';
+  const r = planJsonc(before, [structured('i', 'json', 'insert', '$.tags.bbb.aa', '33333', 'number')]);
+  assert.equal(r.patches.length, 1, '应产生补丁而非跳过');
+  assert.ok(!r.parseErrors?.length, `不应报错：${JSON.stringify(r.parseErrors)}`);
+  const out = applyPatches(before, r.patches);
+  assert.match(out, /"bbb"/);
+  assert.match(out, /"aa": 33333/);
+  // 结果仍是合法 JSON
+  assert.doesNotThrow(() => JSON.parse(out));
+  // 缩进沿用：新增对象元素 4 空格、其内 6 空格
+  assert.match(out, /\n    \{\n      "bbb": \{\n        "aa": 33333\n      \}\n    \}/);
+});
+
+test('0.2.3 多命令同父新增：按指令顺序、逐个沿用缩进（不逆序、不挤行）', () => {
+  const before = '{\n  "a": 1\n}\n';
+  const list = [
+    structured('i1', 'json', 'insert', '$.c', '3', 'number'),
+    structured('i2', 'json', 'insert', '$.d', '4', 'number'),
+    structured('i3', 'json', 'insert', '$.e', '5', 'number'),
+  ];
+  const r = planJsonc(before, list);
+  assert.equal(applyPatches(before, r.patches),
+    '{\n  "a": 1,\n  "c": 3,\n  "d": 4,\n  "e": 5\n}\n');
+});
+
+test('0.2.3 混合深度多命令：深层与顶层都正确、顺序稳定', () => {
+  const before = '{\n  "config": {\n    "host": "x"\n  }\n}\n';
+  const list = [
+    structured('i1', 'json', 'insert', '$.config.port', '8080', 'number'),
+    structured('i2', 'json', 'insert', '$.extra', '1', 'number'),
+  ];
+  const r = planJsonc(before, list);
+  const out = applyPatches(before, r.patches);
+  assert.match(out, /"port": 8080/);
+  assert.match(out, /"extra": 1/);
+  assert.doesNotThrow(() => JSON.parse(out));
+  // 每个新增键都换行 + 沿用缩进
+  assert.ok(!/"host": "x","port"/.test(out), '深层新增不能挤在上一行');
+  assert.match(out, /\},\n  "extra": 1/, '顶层新增应换行并沿用 2 空格缩进');
+});
+
+
+/* ── 0.2.3：YAML 深层路径新增、数组父降级（用户报告 $.tags.bbb.aa = 33333） ── */
+test('0.2.3 YAML 深层路径中间段不存在：创建嵌套映射、逐层缩进正确', () => {
+  const before = 'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n';
+  const r = planYaml(before, [structured('i', 'yaml', 'insert', '$.metadata.bbb.aa', '33333', 'number')]);
+  assert.equal(r.patches.length, 1, '应产生 1 处纯插入补丁');
+  assert.equal(r.patches[0].start, r.patches[0].end, '只插入不替换');
+  assert.ok(!r.parseErrors?.length, `不应报错：${JSON.stringify(r.parseErrors)}`);
+  assert.equal(applyPatches(before, r.patches),
+    'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n  bbb:\n    aa: 33333\n');
+});
+
+test('0.2.3 YAML 顶层两级不存在：逐层嵌套、每层 +2 缩进', () => {
+  const before = 'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n';
+  const r = planYaml(before, [structured('i', 'yaml', 'insert', '$.new.x.y', '33333', 'number')]);
+  assert.equal(applyPatches(before, r.patches),
+    'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\nnew:\n  x:\n    y: 33333\n');
+});
+
+test('0.2.3 YAML 数组父节点用字符串键：降级为追加对象元素，不再静默跳过', () => {
+  const before = 'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n';
+  const r = planYaml(before, [structured('i', 'yaml', 'insert', '$.tags.bbb.aa', '33333', 'number')]);
+  assert.equal(r.patches.length, 1, '应产生补丁而非 0 补丁跳过');
+  assert.ok(!r.parseErrors?.length, `不应报错：${JSON.stringify(r.parseErrors)}`);
+  const out = applyPatches(before, r.patches);
+  assert.equal(out,
+    'version: 1\nname: demo\ntags:\n  - a\n  - b\n  - bbb:\n      aa: 33333\nmetadata:\n  owner: me\n  tier: gold\n');
+});
+
+test('0.2.3 YAML 深层新增结果仍是合法 YAML 且结构正确', () => {
+  const before = 'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n';
+  for (const path of ['$.tags.bbb.aa', '$.metadata.bbb.aa', '$.new.x.y']) {
+    const r = planYaml(before, [structured('i', 'yaml', 'insert', path, '33333', 'number')]);
+    const out = applyPatches(before, r.patches);
+    const docs = parseAllDocuments(out);
+    assert.equal(docs[0].errors.length, 0, `${path} 结果应为合法 YAML`);
+    const js: any = docs[0].toJS();
+    if (path === '$.tags.bbb.aa') assert.deepEqual(js.tags[2], { bbb: { aa: 33333 } });
+    if (path === '$.metadata.bbb.aa') assert.deepEqual(js.metadata.bbb, { aa: 33333 });
+    if (path === '$.new.x.y') assert.deepEqual(js.new, { x: { y: 33333 } });
+  }
+});
+
+
+test('0.2.3 YAML 多命令同父新增：按指令顺序、不逆序', () => {
+  const before = 'version: 1\nname: demo\nmetadata:\n  owner: me\n';
+  const r = planYaml(before, [
+    structured('i1', 'yaml', 'insert', '$.aaa', '1', 'number'),
+    structured('i2', 'yaml', 'insert', '$.bbb', '2', 'number'),
+    structured('i3', 'yaml', 'insert', '$.ccc', '3', 'number'),
+  ]);
+  assert.equal(applyPatches(before, r.patches),
+    'version: 1\nname: demo\nmetadata:\n  owner: me\naaa: 1\nbbb: 2\nccc: 3\n');
+});
+
+test('0.2.3 YAML 用户场景：两条顶层新增 + 深层 $.tags.bbb.aa 均生效、缩进正确', () => {
+  const before = 'version: 1\nname: demo\ntags:\n  - a\n  - b\nmetadata:\n  owner: me\n  tier: gold\n';
+  const r = planYaml(before, [
+    structured('i1', 'yaml', 'insert', '$.aaa', '1', 'number'),
+    structured('i2', 'yaml', 'insert', '$.bbb', '2', 'number'),
+    structured('i3', 'yaml', 'insert', '$.tags.bbb.aa', '33333', 'number'),
+  ]);
+  assert.ok(!r.parseErrors?.length, `不应报错：${JSON.stringify(r.parseErrors)}`);
+  const out = applyPatches(before, r.patches);
+  assert.equal(out,
+    'version: 1\nname: demo\ntags:\n  - a\n  - b\n  - bbb:\n      aa: 33333\nmetadata:\n  owner: me\n  tier: gold\naaa: 1\nbbb: 2\n');
+  const js: any = parseAllDocuments(out)[0].toJS();
+  assert.equal(parseAllDocuments(out)[0].errors.length, 0, '结果应为合法 YAML');
+  assert.equal(js.aaa, 1);
+  assert.equal(js.bbb, 2);
+  assert.deepEqual(js.tags[2], { bbb: { aa: 33333 } });
 });

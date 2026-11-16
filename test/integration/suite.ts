@@ -92,7 +92,7 @@ test('扩展激活并注册全部命令（仅编辑器面板，无侧边栏入�
   assert.ok(!registered.includes('structedit.openSidebar'), '侧边栏入口已被移除，不应注册');
 });
 
-test('Webview 资源随包分发；无指令时 openPanel 不遍历工作区', async () => {
+test('Webview 资源随包分发；首开异步扫描项目根目录一次', async () => {
   const ext = extension();
   for (const rel of [
     'dist/ui/panel.html', 'dist/ui/panel.css', 'dist/ui/panel.js',
@@ -101,11 +101,13 @@ test('Webview 资源随包分发；无指令时 openPanel 不遍历工作区', a
     await vscode.workspace.fs.stat(vscode.Uri.joinPath(ext.extensionUri, rel));
   }
 
-  // 懒加载：首屏 ready 完全不扫描。这里拦截调用，确认打开面板不会 findFiles。
+  // 0.2.1：首开未自选目录时，异步后台扫描当前项目根目录恰好一次；
+  // 无指令时只 findFiles 建树、不读盘（runScan 的 applicableFor 为空路径）。
   await spyFindFiles(async (calls) => {
     await vscode.commands.executeCommand('structedit.openPanel');
     await delay(2000);
-    assert.deepEqual(calls, [], `openPanel 在无指令时不应 findFiles，实际：${JSON.stringify(calls)}`);
+    assert.equal(calls.length, 1, `首开应只自动扫描一次，实际 ${calls.length} 次：${JSON.stringify(calls)}`);
+    assert.equal(typeof calls[0].include, 'string');
   });
 });
 
@@ -134,7 +136,7 @@ test('有启用指令时 findFiles 按 fileScope 收窄且遵守 maxFiles', asyn
   });
 });
 
-test('不注册侧边栏图标：仅 Ctrl+Alt+B 启动编辑器面板', async () => {
+test('不注册侧边栏图标：主/备快捷键启动编辑器面板', async () => {
   const ext = extension();
   const pkgUri = vscode.Uri.joinPath(ext.extensionUri, 'package.json');
   const pkg = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(pkgUri))) as {
@@ -142,18 +144,24 @@ test('不注册侧边栏图标：仅 Ctrl+Alt+B 启动编辑器面板', async ()
       viewsContainers?: unknown;
       views?: unknown;
       menus?: Record<string, unknown>;
-      keybindings?: Array<{ command: string; key: string }>;
+      keybindings?: Array<{ command: string; key: string; when?: string }>;
+      configuration?: { properties?: Record<string, unknown> };
     };
   };
   assert.equal(pkg.contributes?.viewsContainers, undefined, '不应声明 activitybar 容器');
   assert.equal(pkg.contributes?.views, undefined, '不应声明侧边栏 webview views');
   assert.equal(pkg.contributes?.menus?.['view/title'], undefined, '不应有 view/title 菜单');
   const kbs = pkg.contributes?.keybindings ?? [];
-  assert.equal(kbs.length, 2, `快捷键应为面板启动 + 一键回退，实际 ${kbs.length} 个`);
+  assert.equal(kbs.length, 3, `快捷键应为主键 + 备用键 + 一键回退，实际 ${kbs.length} 个`);
   assert.equal(kbs[0].command, 'structedit.openPanel');
   assert.equal(kbs[0].key, 'ctrl+alt+b');
-  assert.equal(kbs[1].command, 'structedit.undoLast');
-  assert.equal(kbs[1].key, 'ctrl+alt+z');
+  assert.equal(kbs[1].command, 'structedit.openPanel');
+  assert.equal(kbs[1].key, 'ctrl+alt+shift+b');
+  assert.equal(kbs[1].when, 'config.batchReplace.enableAltShortcut', '备用键应由设置项开关控制');
+  assert.equal(kbs[2].command, 'structedit.undoLast');
+  assert.equal(kbs[2].key, 'ctrl+alt+z');
+  assert.ok(pkg.contributes?.configuration?.properties?.['batchReplace.enableAltShortcut'],
+    '应声明备用键开关配置项，供用户在 settings.json 自定义');
   await vscode.commands.executeCommand('structedit.openPanel');
   await delay(400);
 });

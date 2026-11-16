@@ -44,6 +44,8 @@ export interface StubState {
   /** PanelController 注册：Webview 消息入口。 */
   webviewHandler: ((msg: Record<string, unknown>) => void) | null;
   queuedToHost: Array<Record<string, unknown>>;
+  /** UI → Host 消息记录（供端到端断言选择/筛选等交互）。 */
+  uiMessages: Array<Record<string, unknown>>;
   /** 最近一次 webview.html（buildHtml 的产物）。 */
   lastWebviewHtml: string;
   panelCount: number;
@@ -64,6 +66,7 @@ export const stubState: StubState = {
   uiDeliver: null,
   webviewHandler: null,
   queuedToHost: [],
+  uiMessages: [],
   lastWebviewHtml: '',
   panelCount: 0,
   config: {},
@@ -82,6 +85,7 @@ export function resetStub(opts: { roots: string[] }): void {
   stubState.uiDeliver = null;
   stubState.webviewHandler = null;
   stubState.queuedToHost = [];
+  stubState.uiMessages = [];
   stubState.lastWebviewHtml = '';
   stubState.panelCount = 0;
   stubState.config = {};
@@ -92,6 +96,7 @@ export function resetStub(opts: { roots: string[] }): void {
 
 /** UI（jsdom）→ Host。 */
 export function uiToHost(msg: Record<string, unknown>): void {
+  stubState.uiMessages.push(msg);
   if (stubState.webviewHandler) stubState.webviewHandler(msg);
   else stubState.queuedToHost.push(msg);
 }

@@ -51,7 +51,14 @@
     extPolicy: 'all',                    // 'all' | 'custom' —— 新建文本指令默认 fileScope（UI-only）
     customInclude: [],
     customExclude: [],
-    filter: { raw: '', include: [], exclude: [], view: 'tree' },
+    filter: {
+      raw: '', include: [], exclude: [], view: 'tree',
+      rows: [],          // 多级筛选条件行 [{id,dim,op,value}]
+      dirs: [],          // 目录层级下钻链（逐级聚焦）
+      mode: 'and',       // 条件行之间 AND / OR
+      onlySelected: false,
+      advanced: false,
+    },
     view: 'tree',
     onlyApplicable: false,
     onlyHits: false,
@@ -66,6 +73,7 @@
     tree: [],
     flat: [],
     expanded: {},
+    resultExpanded: {},             // 第③步只读结果树的目录展开态（默认全展开）
     diffs: [],
     activeDiff: null,
     report: null,
@@ -78,7 +86,9 @@
     scopeEditId: null,
     diffTextMode: false,
     focusPath: null,
+    globExpanded: false,              // 等效 glob 面板纯 UI 折叠态（不影响 globMode/customSelection 语义）
     step: 1,                          // 三步向导：① 选择文件 ② 编辑值 ③ 预览并应用（不持久化）
+    moreOpen: false,                  // 第①步「更多」高级选项折叠态
     previewUri: '',                   // 双击预览弹框当前文件
     scopeRoot: null,                  // 扫描根目录（null = VS Code 打开的工作区；由宿主 init/state 下发）
     canUndo: false,                     // 是否存在可回退的上次应用快照
@@ -86,9 +96,9 @@
   };
 
   const STEPS = [
-    { id: 1, label: '选择文件' },
-    { id: 2, label: '编辑值' },
-    { id: 3, label: '预览并应用' },
+    { id: 1, label: '选要修改文件' },
+    { id: 2, label: '写修改的命令' },
+    { id: 3, label: '应用执行' },
   ];
 
   try {
@@ -106,15 +116,18 @@
   let flatVersion = 0;
   let visCache = { key: '', value: [] };
   let hitCache = { key: '', value: new Set() };
-  let selCache = { version: -1, value: [] };
+  let selCache = { key: '', version: -1, value: [] };
   let dirStats = Object.create(null);
+
+  /** Shift 范围勾选的锚点（当前视图内的路径）。 */
+  let lastTriPath = null;
 
   /** 文件列表或勾选态变化时递增，用于失效前端派生缓存。 */
   function bumpFlatVersion() {
     flatVersion += 1;
     visCache = { key: '', value: [] };
     hitCache = { key: '', value: new Set() };
-    selCache = { version: -1, value: [] };
+    selCache = { key: '', version: -1, value: [] };
   }
   function rebuildMaps() {
     flatByPath = Object.create(null);
@@ -124,11 +137,24 @@
   /* ── 归一化 ───────────────────────────────────────────── */
   function normalizeFilter(f) {
     f = f || {};
+    var rows = Array.isArray(f.rows) ? f.rows.map(function (r) {
+      return {
+        id: (r && typeof r.id === 'string') ? r.id : uid(),
+        dim: (r && (r.dim === 'ext' || r.dim === 'state')) ? r.dim : 'path',
+        op: (r && r.op === 'exclude') ? 'exclude' : 'include',
+        value: (r && typeof r.value === 'string') ? r.value : '',
+      };
+    }) : [];
     return {
       raw: typeof f.raw === 'string' ? f.raw : '',
       include: Array.isArray(f.include) ? f.include.slice() : [],
       exclude: Array.isArray(f.exclude) ? f.exclude.slice() : [],
       view: f.view === 'flat' ? 'flat' : 'tree',
+      rows: rows,
+      dirs: Array.isArray(f.dirs) ? f.dirs.filter(function (d) { return typeof d === 'string' && d; }).slice() : [],
+      mode: f.mode === 'or' ? 'or' : 'and',
+      onlySelected: !!f.onlySelected,
+      advanced: !!f.advanced,
     };
   }
   function normalizeSelection(s) {
@@ -181,7 +207,7 @@
   }
   function sendScope(ins) { post({ type: 'setScope', instructionId: ins.id, scope: ins.fileScope }); }
   function sendFilter(immediate) {
-    const send = function () { post({ type: 'setFilter', raw: S.filter.raw, view: S.view }); };
+    const send = function () { post({ type: 'setFilter', raw: composeRaw(), view: S.view }); };
     if (immediate) { clearTimeout(timers.filter); send(); } else { debounce('filter', 150, send); }
     persist();
   }
@@ -253,6 +279,94 @@
     for (const t of pf.inc) if (!tokenMatches(path, t)) return false;
     return true;
   }
+  /* ── 多级筛选：条件行 + 目录层级链 ─────────────────────────
+   * 参考成熟树选择器的做法：筛选表达式结构化、逐条可删可计数；
+   * 目录链逐级聚焦；可见性完全由前端求值，宿主 raw 只用于高亮回显。 */
+  function rowToken(row) {
+    var v = (row.value || '').trim();
+    if (!v) return '';
+    if (row.dim === 'ext') return 'ext:' + v.replace(/^ext:/i, '').replace(/^\*?\.?/, '');
+    return v;
+  }
+  function rowMatches(f, row) {
+    var v = (row.value || '').trim();
+    if (!v) return true;                    // 空条件不约束，方便边输入边看结果
+    var hit;
+    if (row.dim === 'ext') {
+      hit = tokenMatches(f.path, 'ext:' + v.replace(/^ext:/i, '').replace(/^\*?\.?/, ''));
+    } else if (row.dim === 'state') {
+      if (v === 'selected') hit = f.checked === true;
+      else if (v === 'hits') hit = (f.changeCount || 0) > 0;
+      else if (v === 'applicable') hit = !!f.applicable;
+      else hit = true;
+    } else {
+      hit = tokenMatches(f.path, v);
+    }
+    return row.op === 'exclude' ? !hit : hit;
+  }
+  /** 把结构化条件折成宿主可解析的表达式（state 维度/OR 仅前端生效）。 */
+  function composeRaw() {
+    var parts = [];
+    var dirs = S.filter.dirs;
+    if (dirs.length) parts.push(dirs[dirs.length - 1] + '/**');
+    S.filter.rows.forEach(function (r) {
+      if (r.dim === 'state' || !r.value.trim()) return;
+      var tok = rowToken(r);
+      if (tok) parts.push((r.op === 'exclude' ? '!' : '') + tok);
+    });
+    var quick = (S.filter.raw || '').trim();
+    if (quick) parts.push(quick);
+    return parts.join(' ');
+  }
+  function passFilter(f) {
+    var fl = S.filter;
+    // 0.2.1：结构化模式（JSON/YAML）下，非目标后缀文件直接从树中隐藏，
+    // 不再灰显；「显示全部」高级开关可临时覆盖。
+    if (isLocked(f) && !S.showAll) return false;
+    if (fl.onlySelected && (f.checked !== true || isLocked(f))) return false;
+    if (S.onlyHits && !(f.changeCount > 0)) return false;
+    if (!S.showAll && S.onlyApplicable && !f.applicable) return false;
+    // 层级链：落在最窄一级目录内（上级天然被包含）
+    if (fl.dirs.length) {
+      var d = fl.dirs[fl.dirs.length - 1];
+      if (f.path.indexOf(d + '/') !== 0) return false;
+    }
+    var inc = [], exc = [];
+    fl.rows.forEach(function (r) { if (r.value.trim()) (r.op === 'exclude' ? exc : inc).push(r); });
+    for (var i = 0; i < exc.length; i += 1) if (!rowMatches(f, exc[i])) return false;
+    if (inc.length) {
+      if (fl.mode === 'or') {
+        var any = false;
+        for (var j = 0; j < inc.length; j += 1) if (rowMatches(f, inc[j])) { any = true; break; }
+        if (!any) return false;
+      } else {
+        for (var k = 0; k < inc.length; k += 1) if (!rowMatches(f, inc[k])) return false;
+      }
+    }
+    var quick = (fl.raw || '').trim();
+    if (quick && !matchFilter(f.path, quick)) return false;
+    return true;
+  }
+  function filterStateKey() {
+    return [flatVersion, S.filter.raw, S.filter.mode, S.filter.onlySelected ? 1 : 0,
+      S.filter.dirs.join('>'),
+      S.filter.rows.map(function (r) { return [r.dim, r.op, r.value].join(':'); }).join('|'),
+      S.onlyApplicable ? 1 : 0, S.onlyHits ? 1 : 0, S.showAll ? 1 : 0,
+      S.targetFormat].join('|');
+  }
+  function filterSummary() {
+    var total = S.flat.length;
+    var vis = visibleFlat();
+    var visPaths = Object.create(null);
+    vis.forEach(function (v) { visPaths[v.path] = true; });
+    // 与向导徽标 / 底栏 / 应用按钮同源，避免多处「已选 N」口径不一致。
+    var selected = selectedUris().length;
+    var outside = S.flat.filter(function (f) {
+      return f.checked === true && !isLocked(f) && !visPaths[f.path];
+    }).length;
+    return { total: total, vis: vis.length, selected: selected, outside: outside };
+  }
+
   function validateGlob(raw) {
     let curly = 0, square = 0;
     for (const ch of (raw || '')) {
@@ -278,22 +392,68 @@
     return set;
   }
   function visibleFlat() {
-    const key = [flatVersion, S.filter.raw, S.onlyApplicable ? 1 : 0, S.onlyHits ? 1 : 0, S.showAll ? 1 : 0].join('|');
+    const key = filterStateKey();
     if (visCache.key === key) return visCache.value;
-    const hits = hitPathSet();
-    const out = S.flat.filter(function (f) {
-      if (!S.showAll && S.onlyApplicable && !f.applicable) return false;
-      if (S.onlyHits && !(f.changeCount > 0)) return false;
-      return hits.has(f.path);
-    }).sort(function (a, b) { return a.path.localeCompare(b.path); });
+    const out = S.flat.filter(passFilter)
+      .sort(function (a, b) { return a.path.localeCompare(b.path); });
     visCache = { key: key, value: out };
     return out;
   }
-  function hitUris() { return visibleFlat().map(function (f) { return f.uri; }).filter(Boolean); }
+  /* ── 结构化后缀白名单（0.1.7 反馈）─────────────────────────
+   * YAML 只认 .yaml/.yml，JSON 只认 .json/.jsonc；其它后缀在树里
+   * 灰显标注「不可选」，且不进入命中集 / 已选集 / 应用集合。
+   * 文本 sed 模式不限制（由扩展名策略面板另行管理）。 */
+  function structuredWhitelist() {
+    // 「由目标格式固定」从只读面板搬到树上（0.1.7 反馈）：
+    // 结构化模式下 YAML 只认 .yaml/.yml，JSON 只认 .json/.jsonc；
+    // Sed / 文本模式不限制（可改任意类型）。
+    // 用 targetFormat 而非 candidateExtensions：后者在启用指令后会让
+    // findFiles 收窄到只剩白名单文件，规则反而永远看不到；而用户看到的
+    // 「其它后缀都能勾」正是发生在第 ① 步还没写指令的时候。
+    if (S.targetFormat === 'yaml') return ['yaml', 'yml'];
+    if (S.targetFormat === 'json') return ['json', 'jsonc'];
+    return null;
+  }
+  function whitelistText() {
+    var wl = structuredWhitelist();
+    return wl ? ('.' + wl.join(' / .')) : '';
+  }
+  function isLocked(f) {
+    const wl = structuredWhitelist();
+    if (!wl || !f) return false;
+    const ext = String(f.ext || '').toLowerCase().replace(/^\./, '');
+    return wl.indexOf(ext) < 0;
+  }
+  /** 当前筛选视图内可选文件的勾选情况（用于全选/取消全选切换） */
+  function viewSelectState() {
+    const vis = visibleFlat();
+    // visibleFlat 已在结构化模式过滤掉非目标后缀，这里再兜底一次防御
+    const selectable = vis.filter(function (f) { return !isLocked(f) || S.showAll; });
+    const selected = selectable.filter(function (f) { return f.checked === true; }).length;
+    return {
+      total: selectable.length,
+      selected: selected,
+      allSelected: selectable.length > 0 && selected === selectable.length,
+    };
+  }
+
+  function lockedByPath(path) {
+    return isLocked(flatByPath[path]);
+  }
+  function lockBadgeHtml() {
+    return '<span class="lock-badge" role="note" title="目标格式不支持此后缀，不可勾选">' +
+      ic('lock') + ' 不可选</span>';
+  }
+  function hitUris() {
+    return visibleFlat().filter(function (f) { return !isLocked(f); })
+      .map(function (f) { return f.uri; }).filter(Boolean);
+  }
   function selectedUris() {
-    if (selCache.version === flatVersion) return selCache.value;
-    const out = S.flat.filter(function (f) { return f.checked === true; }).map(function (f) { return f.uri; }).filter(Boolean);
-    selCache = { version: flatVersion, value: out };
+    const key = flatVersion + '|' + S.targetFormat;
+    if (selCache.key === key) return selCache.value;
+    const out = S.flat.filter(function (f) { return f.checked === true && !isLocked(f); })
+      .map(function (f) { return f.uri; }).filter(Boolean);
+    selCache = { key: key, version: flatVersion, value: out };
     return out;
   }
 
@@ -547,7 +707,7 @@
       '<button type="button" class="btn btn-primary btn-sm" data-action="add-ins">' + ic('add') + ' 添加' + (eng === 'structured' ? '结构化' : '文本') + '指令</button>' +
       '</div>';
     if (!list.length) {
-      html += emptyState('edit', '当前引擎暂无指令，添加一条以开始配置批量修改。', '添加第一条指令', 'add-ins');
+      html += emptyState('edit', '暂无指令，点「添加」配置批量修改。', '添加第一条指令', 'add-ins');
     } else {
       html += '<div class="ins-list">' + list.map(renderInsRow).join('') + '</div>';
     }
@@ -558,19 +718,6 @@
   }
 
   /* ── 文件范围区（§8.10）渲染 ────────────────────────────── */
-  function policyStructuredHtml(tf) {
-    const exts = tf === 'yaml' ? '*.yaml, *.yml' : '*.json, *.jsonc';
-    const why = tf === 'yaml'
-      ? '由目标格式 YAML 固定（*.yaml / *.yml），切换目标格式可改变'
-      : '由目标格式 JSON 固定（*.json / *.jsonc），切换目标格式可改变';
-    return '<div class="panel policy">' +
-      '<div class="panel-head"><span>' + ic('lock') + ' 扩展名策略（结构化 · 只读）</span></div>' +
-      '<div class="panel-body">' +
-      '<span class="policy-lock" role="note" aria-disabled="true" aria-label="扩展名由目标格式固定，不可编辑" title="' + esc(why) + '">' +
-      ic('lock') + ' ' + esc(exts) + ' <span class="badge badge-outline">只读</span></span>' +
-      '<span class="policy-lock-note">「由目标格式固定」· 结构化模式下不渲染标签输入框</span>' +
-      '</div></div>';
-  }
   function policyTextHtml() {
     const mode = S.extPolicy;
     return '<div class="panel policy">' +
@@ -587,7 +734,7 @@
       '</div></div>';
   }
   function filterEchoHtml() {
-    const raw = (S.filter.raw || '').trim();
+    const raw = composeRaw();
     if (!raw) return '已解析：<span class="k">（无筛选条件，显示全部候选文件）</span>';
     const parts = raw.split(/\s+/).filter(Boolean).map(function (tok) {
       if (tok[0] === '!' || tok[0] === '-') return '¬ ' + esc(tok.slice(1) || tok);
@@ -599,7 +746,7 @@
   }
   function renderFilterEcho() {
     const n = el('filter-echo'); if (!n) return;
-    const ok = validateGlob(S.filter.raw).ok;
+    const ok = validateGlob(composeRaw()).ok;
     n.classList.toggle('is-invalid', !ok);
     n.innerHTML = filterEchoHtml();
     const fi = el('filter-input');
@@ -608,6 +755,65 @@
       if (!ok) fi.setAttribute('aria-invalid', 'true'); else fi.removeAttribute('aria-invalid');
     }
   }
+  function crumbHtml() {
+    var dirs = S.filter.dirs;
+    var out = '<div class="filter-levels" role="group" aria-label="目录层级筛选">' +
+      '<span class="fl-label">' + ic('list-tree') + ' 层级</span>' +
+      '<button type="button" class="crumb' + (dirs.length ? '' : ' is-active') + '" data-action="filter-crumb" data-index="-1" title="显示全部目录层级">全部</button>';
+    dirs.forEach(function (d, i) {
+      var name = d.split('/').pop() || d;
+      out += '<span class="crumb-sep" aria-hidden="true">/</span>' +
+        '<button type="button" class="crumb' + (i === dirs.length - 1 ? ' is-active' : '') + '" data-action="filter-crumb" data-index="' + i + '" title="' + esc(d) + '">' + esc(name) + '</button>';
+    });
+    out += (dirs.length ? '<button type="button" class="btn btn-sec btn-sm" data-action="filter-crumb-clear" title="清除目录层级聚焦">' + ic('clear-all') + ' 清除层级</button>' : '') +
+      '<span class="fl-tip">点树中目录的 ' + ic('target') + ' 可逐级聚焦</span></div>';
+    return out;
+  }
+  function condRowHtml(row) {
+    var dims = [['path', '路径 / 名称'], ['ext', '扩展名'], ['state', '状态']];
+    var ops = [['include', '包含'], ['exclude', '排除']];
+    var states = [['selected', '已勾选'], ['hits', '有命中'], ['applicable', '适用指令']];
+    var count = S.flat.filter(function (f) { return rowMatches(f, row); }).length;
+    var valueCtrl;
+    if (row.dim === 'state') {
+      valueCtrl = '<select class="cond-value" id="cv-' + esc(row.id) + '" data-filter-field="value" data-id="' + esc(row.id) + '" aria-label="状态条件值">' +
+        states.map(function (o) { return '<option value="' + o[0] + '"' + (row.value === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
+    } else {
+      valueCtrl = '<input class="cond-value" id="cv-' + esc(row.id) + '" type="text" data-filter-field="value" data-id="' + esc(row.id) + '" value="' + esc(row.value) + '" placeholder="' +
+        (row.dim === 'ext' ? 'yaml 或 yaml,yml' : '子串 / glob，如 conf 或 *.yaml') + '" aria-label="筛选条件值" autocomplete="off" spellcheck="false">';
+    }
+    return '<div class="filter-cond-row" data-id="' + esc(row.id) + '">' +
+      '<select class="cond-dim" id="cd-' + esc(row.id) + '" data-filter-field="dim" data-id="' + esc(row.id) + '" aria-label="筛选维度">' +
+      dims.map(function (o) { return '<option value="' + o[0] + '"' + (row.dim === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+      '<select class="cond-op" id="co-' + esc(row.id) + '" data-filter-field="op" data-id="' + esc(row.id) + '" aria-label="包含或排除">' +
+      ops.map(function (o) { return '<option value="' + o[0] + '"' + (row.op === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+      valueCtrl +
+      '<span class="cond-count" title="该条件单独命中的文件数">命中 <b>' + count + '</b></span>' +
+      '<button type="button" class="icon-btn" data-action="filter-row-del" data-id="' + esc(row.id) + '" aria-label="删除此条件" title="删除此条件">' + ic('close') + '</button>' +
+      '</div>';
+  }
+  function advancedFilterHtml() {
+    var fl = S.filter;
+    var n = fl.rows.filter(function (r) { return r.value.trim(); }).length;
+    var open = fl.advanced || n > 0;
+    return '<div class="filter-advanced">' +
+      '<div class="fa-head">' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="filter-advanced" aria-expanded="' + open + '" title="展开/收起多级筛选条件">' +
+      ic('filter') + ' 多级筛选' + (n ? ' <span class="fa-badge">' + n + '</span>' : '') + ' ' + ic(open ? 'chevron-down' : 'chevron-right') + '</button>' +
+      '<div class="seg" role="group" aria-label="条件之间的逻辑关系">' +
+      '<button type="button" class="seg-btn" data-action="filter-mode" data-mode="and" aria-pressed="' + (fl.mode === 'and') + '" title="所有包含条件同时满足">AND</button>' +
+      '<button type="button" class="seg-btn" data-action="filter-mode" data-mode="or" aria-pressed="' + (fl.mode === 'or') + '" title="任一包含条件满足即可">OR</button>' +
+      '</div>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="filter-add" title="新增一条筛选条件">' + ic('add') + ' 添加条件</button>' +
+      '<label class="fa-check"><input type="checkbox" data-action="filter-only-selected" ' + (fl.onlySelected ? 'checked' : '') + '> 只看已选</label>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="clear-filter" title="清空全部筛选条件（勾选状态保留）">' + ic('clear-all') + ' 清除全部</button>' +
+      '</div>' +
+      (open ? '<div class="fa-body">' +
+        (fl.rows.length ? fl.rows.map(condRowHtml).join('') : '<div class="fa-empty">暂无条件。点「添加条件」按路径、扩展名或状态逐级收敛范围。</div>') +
+        '</div>' : '') +
+      '</div>';
+  }
+
   function chipsHtml() {
     const chips = ['*.yaml', '*.yml', '*.json', '*.env', '*.py', '*.md'];
     const tf = S.targetFormat;
@@ -625,34 +831,60 @@
     }).join('');
   }
   function batchbarHtml() {
-    return '<div class="batchbar" role="toolbar" aria-label="批量选择操作（作用于当前命中集）">' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="batch" data-op="selectAll" title="勾选当前命中集中全部候选文件">' + ic('check-all') + ' 全选命中</button>' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="deselectAll" title="仅取消命中集内文件的勾选">' + ic('circle-slash') + ' 取消命中</button>' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="invert" title="命中集内逐个取反">' + ic('sync') + ' 反选</button>' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="keepOnly" title="把选择集收敛为命中集（需二次确认）">' + ic('filter') + ' 仅保留</button>' +
+    return '<div class="batchbar" role="toolbar" aria-label="批量选择操作（仅作用于当前筛选视图）">' +
+      '<span class="batch-group" role="group" aria-label="选择操作">' +
+      '<span class="batch-label" aria-hidden="true">选择</span>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="batch" data-op="selectAll" title="勾选当前筛选视图内的全部文件（筛选外的已勾选项不受影响）">' + ic('check-all') + ' 全选命中</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="deselectAll" title="仅取消当前筛选视图内文件的勾选">' + ic('circle-slash') + ' 取消命中</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="invert" title="当前筛选视图内逐个取反">' + ic('sync') + ' 反选</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="keepOnly" title="把选择集收敛为当前筛选视图（需二次确认）">' + ic('filter') + ' 仅保留</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="review-start" title="进入逐个审阅（依次选择）">' + ic('debug-step-over') + ' 依次选择</button>' +
+      '</span>' +
       '<span class="batch-sep" aria-hidden="true"></span>' +
-      '<button type="button" class="btn btn-primary btn-sm" data-action="review-start" title="进入逐个审阅（依次选择）">' + ic('debug-step-over') + ' 依次选择</button>' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="clear-filter" title="恢复全量视图，勾选状态原样保留">' + ic('clear-all') + ' 清除筛选</button>' +
+      '<span class="batch-group" role="group" aria-label="视图开关">' +
+      '<span class="batch-label" aria-hidden="true">视图</span>' +
       '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="onlyApplicable" aria-pressed="' + S.onlyApplicable + '" title="只显示候选扩展名文件">' + ic('eye') + ' 只看适用</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="clear-filter" title="恢复全量视图，勾选状态原样保留">' + ic('clear-all') + ' 清除筛选</button>' +
+      '</span>' +
       '</div>';
   }
   function treeToolbarHtml() {
-    return '<button type="button" class="icon-btn" data-action="collapse-all" aria-label="折叠全部目录" title="折叠全部">' + ic('fold') + '</button>' +
-      '<button type="button" class="icon-btn" data-action="expand-all" aria-label="展开全部目录" title="展开全部">' + ic('unfold') + '</button>' +
+    return '<button type="button" class="icon-btn" data-action="collapse-all" aria-label="折叠全部目录" title="折叠全部">' + ic('chevron-up') + '</button>' +
+      '<button type="button" class="icon-btn" data-action="expand-all" aria-label="展开全部目录" title="展开全部">' + ic('chevron-down') + '</button>' +
       '<span class="spacer"></span>' +
       '<button type="button" class="btn btn-sec btn-sm" data-action="only-hits" aria-pressed="' + S.onlyHits + '" title="只看有命中的文件（审阅降噪）">' + ic('eye') + ' 只看命中</button>' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="show-all" aria-pressed="' + S.showAll + '" title="显示全部文件（含非候选类型）">' + ic('list-flat') + ' 显示全部</button>';
+      '<button type="button" class="btn btn-sec btn-sm" data-action="show-all" aria-pressed="' + S.showAll + '" title="临时显示其它后缀的文件（结构化模式下默认隐藏）">' + ic('list-flat') + ' 显示全部</button>';
   }
   function globPanelHtml() {
-    const lines = (S.equivalentGlob.length ? S.equivalentGlob : ['（无）']).map(function (g) {
+    const custom = S.globMode === 'summary' || S.customSelection;
+    const open = !!S.globExpanded;   // 纯 UI 折叠态，默认折叠成紧凑摘要行
+    const n = selectedUris().length;
+    const globs = S.equivalentGlob.length ? S.equivalentGlob : ['（无）'];
+    const lines = globs.map(function (g) {
       return '<div class="glob-line"><span class="g-tag">include</span><span>' + esc(g) + '</span></div>';
     }).join('');
     const summ = '<div class="glob-summary" aria-label="等效 glob 摘要（含扩展名表达式）">' + lines + '</div>';
-    if (S.globMode === 'summary' || S.customSelection) {
-      const n = selectedUris().length;
+    const toggleBtn = '<button type="button" class="icon-btn" data-action="glob-toggle" aria-expanded="' + open + '" aria-label="' + (open ? '折叠等效 glob 面板' : '展开查看或编辑 glob') + '" title="' + (open ? '折叠' : '展开查看/编辑') + '">' + ic(open ? 'chevron-up' : 'chevron-down') + '</button>';
+    if (!open) {
+      // 折叠态：一行紧凑摘要 + 保留 glob-reset / glob-show-edit 入口
+      const joined = globs.join(' ');
+      return '<div class="panel glob-panel">' +
+        '<div class="panel-head"><span>' + ic('globe') + ' 等效 glob' +
+        (custom ? ' <span class="badge badge-outline" title="当前为自定义勾选，glob 仅作只读摘要">自定义 ' + n + '</span>' : '') +
+        '</span>' + toggleBtn + '</div>' +
+        '<div class="panel-body">' +
+        '<div class="glob-summary glob-compact" title="' + esc(joined) + '"><span class="g-tag">include</span><span class="g-text">' + esc(joined) + '</span></div>' +
+        '<div class="glob-actions">' +
+        '<button type="button" class="btn btn-sec btn-sm" data-action="glob-reset">' + ic('discard') + ' 重置' + (custom ? '为 glob' : '') + '</button>' +
+        (custom ? '<button type="button" class="btn btn-sec btn-sm" data-action="glob-show-edit">查看等效 glob</button>' : '') +
+        '</div></div></div>';
+    }
+    if (custom) {
       return '<div class="panel glob-panel">' +
         '<div class="panel-head"><span>' + ic('globe') + ' 等效 glob 摘要</span>' +
-        '<button type="button" class="icon-btn" data-action="glob-show-edit" aria-label="展开查看或编辑 glob" title="展开查看/编辑">' + ic('chevron-down') + '</button></div>' +
+        '<span class="glob-head-actions">' +
+        '<button type="button" class="icon-btn" data-action="glob-show-edit" aria-label="展开查看或编辑 glob" title="展开查看/编辑">' + ic('chevron-down') + '</button>' +
+        toggleBtn + '</span></div>' +
         '<div class="panel-body">' +
         '<div class="glob-custom"><span>' + ic('edit') + ' 自定义选择（' + n + ' 个文件）</span><span class="badge badge-outline">只读摘要态</span></div>' +
         summ +
@@ -662,7 +894,7 @@
         '</div></div></div>';
     }
     return '<div class="panel glob-panel">' +
-      '<div class="panel-head"><span>' + ic('globe') + ' 等效 glob（include / exclude）</span></div>' +
+      '<div class="panel-head"><span>' + ic('globe') + ' 等效 glob（include / exclude）</span>' + toggleBtn + '</div>' +
       '<div class="panel-body">' +
       '<div class="glob-block"><span class="glob-block-title">include（目录 glob）</span>' + tagEditor('glob:include', S.selection.baseInclude, 'config/** ，回车添加') + '</div>' +
       '<div class="glob-block"><span class="glob-block-title">exclude（排除 glob）</span>' + tagEditor('glob:exclude', S.selection.baseExclude, '**/legacy/** ，回车添加') + '</div>' +
@@ -680,6 +912,7 @@
   function buildDirStats(vis) {
     dirStats = Object.create(null);
     for (const f of vis) {
+      if (isLocked(f)) continue; // 不可选文件不参与目录三态，避免「全选」误判
       const parts = f.path.split('/');
       let acc = '';
       for (let i = 0; i < parts.length - 1; i++) {
@@ -697,7 +930,7 @@
   }
   function selText(dir) {
     const st = dirStats[dir];
-    return st && st.tot ? (st.sel + '/' + st.tot + ' 已选') : '';
+    return st && st.tot ? (st.sel + '/' + st.tot + ' 已选(可见)') : '';
   }
   function dirCheckState(path) {
     const st = dirStats[path];
@@ -718,18 +951,27 @@
     const cnt = isDir ? countHitsUnder(node.path) : ((flatByPath[node.path] && flatByPath[node.path].changeCount) || node.changeCount || 0);
     const sel = isDir ? selText(node.path) : '';
     const nonCand = !node.applicable;
-    const tip = nonCand ? ('当前指令不适用此类型' + (node.reason ? '：' + node.reason : '')) : '';
-    return '<div class="tree-row ' + (isDir ? 'is-dir' : 'is-file') + (nonCand ? ' is-noncandidate' : '') + '" ' +
+    const locked = !isDir && lockedByPath(node.path);
+    // 0.2.2：结构化模式下树里显示的文件都是目标后缀（非目标已隐藏），一律按「可选」渲染。
+    // applicable 仅作 tip 说明（当前启用指令可能不作用于它），不再灰显 —— 切换目标格式/Sed
+    // 时宿主的 applicable 不变，若继续用它灰显会让可选文件看起来是置灰不可选。
+    const tip = locked ? ('目标格式只支持 ' + (whitelistText() || '全部类型') + '，此后缀不可勾选')
+      : (nonCand ? ('当前指令暂不作用于此文件' + (node.reason ? '：' + node.reason : '')) : '');
+    return '<div class="tree-row ' + (isDir ? 'is-dir' : 'is-file') + (locked ? ' is-locked' : '') + '" ' +
       'role="treeitem" aria-level="' + (level + 1) + '" aria-selected="false" ' +
       (isDir ? 'aria-expanded="' + expanded + '" ' : '') +
       'tabindex="-1" data-path="' + esc(node.path) + '" data-kind="' + node.kind + '" ' +
       'style="padding-left:' + pad + 'px"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' +
       chevron + ico +
-      '<span class="tri" role="checkbox" aria-checked="' + ariaChecked(checked) + '" tabindex="0" data-action="tri" data-path="' + esc(node.path) + '" data-kind="' + node.kind + '" aria-label="选择 ' + esc(node.name) + '"></span>' +
+      '<span class="tri" role="checkbox" aria-checked="' + ariaChecked(locked ? false : checked) + '" ' +
+      (locked ? 'aria-disabled="true" tabindex="-1" ' : 'tabindex="0" ') +
+      'data-action="tri" data-path="' + esc(node.path) + '" data-kind="' + node.kind + '" aria-label="' + (locked ? '不可选择 ' : '选择 ') + esc(node.name) + '"></span>' +
       '<span class="tree-label">' + highlight(node.name, node.hitRanges) + '</span>' +
+      (locked ? lockBadgeHtml() : '') +
       (cnt ? '<span class="row-badge"><span class="badge" aria-label="' + cnt + ' 处命中">●' + cnt + '</span></span>' : '') +
       (sel ? '<span class="row-badge"><span class="badge badge-outline">' + esc(sel) + '</span></span>' : '') +
       '<span class="row-actions">' +
+      (isDir ? '<button type="button" class="icon-btn" data-action="focus-dir" data-path="' + esc(node.path) + '" aria-label="仅看此目录并逐级聚焦" title="逐级聚焦：仅看此目录">' + ic('target') + '</button>' : '') +
       (isDir ? '<button type="button" class="icon-btn" data-action="dir-menu" data-path="' + esc(node.path) + '" aria-label="目录批量操作" title="目录批量操作">' + ic('kebab-vertical') + '</button>' : '') +
       (!isDir ? '<button type="button" class="icon-btn" data-action="open-file" data-path="' + esc(node.path) + '" aria-label="在编辑器中查看 ' + esc(node.name) + '" title="在编辑器中查看">' + ic('go-to-file') + '</button>' : '') +
       '</span></div>';
@@ -752,12 +994,18 @@
   }
   function flatRowHtml(f) {
     const nonCand = !f.applicable;
-    return '<div class="tree-row is-file' + (nonCand ? ' is-noncandidate' : '') + '" role="treeitem" aria-level="1" aria-selected="false" tabindex="-1" ' +
-      'data-path="' + esc(f.path) + '" data-kind="file"' + (nonCand ? ' title="当前指令不适用此类型"' : '') + '>' +
+    const locked = isLocked(f);
+    const tip = locked ? ('目标格式只支持 ' + (whitelistText() || '全部类型') + '，此后缀不可勾选')
+      : (nonCand ? '当前指令暂不作用于此文件' : '');
+    return '<div class="tree-row is-file' + (locked ? ' is-locked' : '') + '" role="treeitem" aria-level="1" aria-selected="false" tabindex="-1" ' +
+      'data-path="' + esc(f.path) + '" data-kind="file"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' +
       '<span class="tree-chevron" aria-hidden="true"></span>' + ic('file', 'tree-icon') +
-      '<span class="tri" role="checkbox" aria-checked="' + ariaChecked(!!f.checked) + '" tabindex="0" data-action="tri" data-path="' + esc(f.path) + '" data-kind="file" aria-label="选择 ' + esc(f.path) + '"></span>' +
+      '<span class="tri" role="checkbox" aria-checked="' + ariaChecked(locked ? false : !!f.checked) + '" ' +
+      (locked ? 'aria-disabled="true" tabindex="-1" ' : 'tabindex="0" ') +
+      'data-action="tri" data-path="' + esc(f.path) + '" data-kind="file" aria-label="' + (locked ? '不可选择 ' : '选择 ') + esc(f.path) + '"></span>' +
       '<span class="tree-label flat-path">' + highlight(f.path, f.hitRanges) + '</span>' +
       '<span class="row-badge"><span class="ext-badge">' + esc(f.ext || '') + '</span></span>' +
+      (locked ? lockBadgeHtml() : '') +
       '<span class="row-badge"><span class="badge" aria-label="适用 ' + f.instructionCount + ' 条指令">' + f.instructionCount + ' 指令</span></span>' +
       (f.changeCount ? '<span class="row-badge"><span class="badge" aria-label="' + f.changeCount + ' 处变更">●' + f.changeCount + '</span></span>' : '') +
       '<span class="row-actions"><button type="button" class="icon-btn" data-action="open-file" data-path="' + esc(f.path) + '" aria-label="在编辑器中查看" title="在编辑器中查看">' + ic('go-to-file') + '</button></span>' +
@@ -787,6 +1035,14 @@
   }
   function treeOrFlatHtml() {
     const vis = visibleFlat();
+    if (!vis.length && S.flat.length === 0) {
+      // 首屏懒加载：尚未扫描。引导直接指向上方唯一的过滤框（一件事的入口），
+      // 不再重复一个「选择目录」按钮（主栏已有）。
+      return '<div class="state-empty pk-empty">' +
+        '<span class="codicon codicon-search empty-icon" aria-hidden="true"></span>' +
+        '<span class="empty-text">在上方输入过滤条件即可自动载入文件（如 <b>*.yaml</b> 或 <b>config</b>）。载入后<b>默认全部不选中</b>，点「全选匹配」加入修改列表；换条件可多次追加。也可点左上角目录按钮更换扫描目录。</span>' +
+        '</div>';
+    }
     if (!vis.length) {
       return emptyState('search', '没有匹配文件。可清除筛选条件或扩大文件范围。', '清除筛选条件', 'clear-filter') +
         '<div style="padding:0 8px 8px 8px"><button type="button" class="btn btn-sec btn-sm" data-action="show-all">' + ic('eye') + ' 扩大文件范围（显示全部）</button></div>';
@@ -816,56 +1072,98 @@
     if (r) { setRoving(r); r.focus(); }
   }
 
+  /* ── 第①步：单一「文件选择器」──────────────────────────────
+   * 把「选目录 → 输入过滤条件 → 树里批量勾选 → 确认范围」合成一条连续动线。
+   * 主区只保留：目录/格式主栏、一个过滤框、结果统计+全选、占满高度的树、确认条。
+   * 其余次要控件收进默认折叠的「更多」面板（DOM 与 data-action 全部保留）。 */
   function renderScope() {
     const body = el('scope-body');
     if (!S.hasInit) { body.innerHTML = skeletonHtml(5); return; }
     const tf = S.targetFormat;
     const structured = tf !== 'sed';
+    const sm = filterSummary();
 
-    const fmtRow = '<div class="fmt-row">' +
-      '<span class="fmt-label">目标格式（新建指令默认值）</span>' +
-      '<div class="seg" role="group" aria-label="目标格式，仅作新建指令默认值">' +
-      [['json', 'JSON'], ['yaml', 'YAML'], ['sed', 'Sed / 文本']].map(function (x) {
-        return '<button type="button" class="seg-btn" data-action="target-format" data-format="' + x[0] + '" aria-pressed="' + (tf === x[0]) + '" title="切换仅影响新建指令默认值，不改动已有指令 fileScope">' + x[1] + '</button>';
-      }).join('') + '</div>' +
-      '<span class="sec-note">切换不改已有指令 fileScope（§6.1 规则 3）</span>' +
-      (S.candidateExtensions === 'all' ? '<span class="sec-note">已启用全部文件类型（来自文本指令）</span>' : '') +
-      '</div>';
-
-    const filterRow = '<div class="filter-row">' +
-      '<div class="filter-input-wrap"><span class="codicon codicon-search" aria-hidden="true"></span>' +
-      '<input id="filter-input" class="filter-input" type="text" value="' + esc(S.filter.raw) + '" ' +
-      'placeholder="筛选：conf *.yaml !legacy（空格 AND）" aria-label="文件筛选条件" aria-describedby="filter-echo" autocomplete="off" spellcheck="false"></div>' +
-      '<div class="seg view-toggle" role="group" aria-label="列表视图">' +
-      '<button type="button" class="seg-btn" data-action="view" data-view="tree" aria-pressed="' + (S.view === 'tree') + '" title="树状视图">' + ic('list-tree') + ' 树状</button>' +
-      '<button type="button" class="seg-btn" data-action="view" data-view="flat" aria-pressed="' + (S.view === 'flat') + '" title="跨目录扁平命中列表">' + ic('list-flat') + ' 扁平</button>' +
-      '</div>' +
-      '<span class="hit-count">命中 <span class="num">' + visibleFlat().length + '</span> · 已选 <span class="num">' + selectedUris().length + '</span></span>' +
-      '</div>' +
-      '<div class="filter-echo" id="filter-echo">' + filterEchoHtml() + '</div>' +
-      '<div class="filter-chips" role="group" aria-label="筛选快捷片">' + chipsHtml() + '</div>';
-
-    // 选择目录（bug1）：默认 VS Code 打开的工作区根目录，可弹窗改到任意目录（含工作区之外）。
-    const rootRow = '<div class="filter-row scope-root-row">' +
-      '<button type="button" class="btn btn-sec btn-sm" data-action="pick-directory" title="弹出目录选择框，以该目录为扫描根（可选择工作区之外的目录）">' +
-      ic('folder-opened') + ' 选择目录…</button>' +
+    // 目标格式（决定可勾选后缀）：与「目录」同属"范围"，放主栏
+    const fmtSeg = '<div class="seg pk-fmt" role="group" aria-label="目标格式，决定可勾选后缀">' +
+      [['json', 'JSON'], ['yaml', 'YAML'], ['sed', 'Sed']].map(function (x) {
+        return '<button type="button" class="seg-btn" data-action="target-format" data-format="' + x[0] + '" aria-pressed="' + (tf === x[0]) + '" title="' + (x[0] === 'sed' ? '文本模式：全部类型可选' : '仅 ' + (x[0] === 'json' ? '.json/.jsonc' : '.yaml/.yml') + ' 可勾选') + '">' + x[1] + '</button>';
+      }).join('') + '</div>';
+    const dirLabel = S.scopeRoot ? shortRoot(S.scopeRoot) : '工作区根目录';
+    const pkBar = '<div class="pk-bar">' +
+      '<button type="button" class="pk-dir" data-action="pick-directory" title="更换扫描目录（默认使用 VS Code 打开的工作区根目录，可选工作区外目录）">' +
+      ic('root-folder') + '<span class="pk-dir-name">' + esc(dirLabel) + '</span>' + ic('chevron-down') + '</button>' +
       (S.scopeRoot
         ? '<span class="scope-root-badge" title="' + esc(S.scopeRoot) + '">' + ic('folder') + ' ' + esc(shortRoot(S.scopeRoot)) + '</span>' +
-          '<button type="button" class="btn btn-sec btn-sm" data-action="reset-scope-root" title="' + esc(S.scopeRoot) + '">' +
-          ic('discard') + ' 恢复工作区根目录</button>'
-        : '<span class="sec-note">' + ic('root-folder') + ' 扫描根目录：VS Code 打开的工作区</span>') +
+          '<button type="button" class="btn btn-sec btn-sm" data-action="reset-scope-root" title="' + esc(S.scopeRoot) + '">' + ic('discard') + ' 恢复</button>'
+        : '') +
+      '<span class="pk-sep" aria-hidden="true"></span>' +
+      '<span class="pk-label">目标格式</span>' + fmtSeg +
+      (S.candidateExtensions === 'all' ? '<span class="sec-note">全部文件类型</span>' : '') +
       '</div>';
 
-    const grid = '<div class="scope-grid">' +
-      '<div class="scope-left"><div class="tree-toolbar">' + treeToolbarHtml() + '</div>' +
-      '<div class="tree" id="scope-tree" role="tree" aria-label="文件范围列表">' + treeOrFlatHtml() + '</div></div>' +
-      '<div class="scope-right">' + globPanelHtml() + '</div></div>';
+    // 过滤框：这一步唯一的视觉焦点，输入即时过滤
+    const pkSearch = '<div class="pk-search">' +
+      '<span class="codicon codicon-search" aria-hidden="true"></span>' +
+      '<input id="filter-input" class="filter-input pk-input" type="text" value="' + esc(S.filter.raw) + '" ' +
+      'placeholder="输入路径 / 扩展名 / 关键词过滤文件，如 conf *.yaml !legacy" aria-label="过滤要修改的文件" aria-describedby="filter-echo" autocomplete="off" spellcheck="false">' +
+      '<button type="button" class="icon-btn pk-clear" data-action="clear-filter" aria-label="清空筛选条件" title="清空筛选条件">' + ic('clear-all') + '</button>' +
+      '<button type="button" class="btn btn-sec btn-sm pk-more-btn" data-action="toggle-more" aria-expanded="' + !!S.moreOpen + '" title="展开高级选项：视图、快捷片、多级条件、批量操作、等效 glob">' +
+      ic('settings-gear') + ' 更多 ' + ic(S.moreOpen ? 'chevron-up' : 'chevron-down') + '</button>' +
+      '</div>' +
+      '<div class="filter-echo pk-echo" id="filter-echo">' + filterEchoHtml() + '</div>';
+
+    // 结果条：统计 + 「全选匹配 / 取消全选」切换（每次筛选逻辑一致）+ 清空全部
+    const vs = viewSelectState();
+    const toggleOp = vs.allSelected ? 'deselectAll' : 'selectAll';
+    const toggleLabel = vs.allSelected ? '取消全选' : '全选匹配';
+    const toggleIco = vs.allSelected ? 'circle-slash' : 'check-all';
+    const pkResult = '<div class="pk-result">' +
+      '<span class="hit-count">匹配 <span class="num">' + sm.vis + '</span> / ' + sm.total +
+      ' · 已选 <span class="num">' + sm.selected + '</span>' +
+      (sm.outside ? ' <span class="outside-badge" title="这些文件已被勾选，但不在当前过滤视图内；换条件不会清空它们">' + sm.outside + ' 在视图外</span>' : '') + '</span>' +
+      '<span class="row-spacer"></span>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="batch" data-op="' + toggleOp + '"' +
+      (vs.total === 0 ? ' aria-disabled="true"' : '') +
+      ' title="' + (vs.allSelected ? '取消当前筛选结果中全部文件的勾选' : '勾选当前筛选结果中的全部可选文件，可换条件多次追加') + '">' +
+      ic(toggleIco) + ' ' + toggleLabel + ' ' + vs.total + '</button>' +
+      '<button type="button" class="btn btn-sec btn-sm" data-action="batch" data-op="clearAll"' +
+      (sm.selected === 0 ? ' aria-disabled="true"' : '') +
+      ' title="清空全部已选文件，回到默认全不选">' + ic('clear-all') + ' 清空全部</button>' +
+      '<label class="pk-chk"><input type="checkbox" data-action="filter-only-selected" ' + (S.filter.onlySelected ? 'checked' : '') + '> 只看已选</label>' +
+      '</div>';
+
+    // 树：这一步真正的主角，占满剩余高度
+    const pkTree = '<div class="pk-tree"><div class="tree" id="scope-tree" role="tree" aria-label="要修改的文件">' + treeOrFlatHtml() + '</div></div>';
+
+    // 确认条：把「范围已确认」显式化，直接通往第②步
+    const wl = whitelistText();
+    const pkConfirm = '<div class="pk-confirm">' +
+      '<span class="pk-confirm-info">' + ic('check') + ' 只有勾选的文件会进入修改列表' +
+      (wl ? ' · 仅 ' + esc(wl) + ' 可修改' : ' · 全部类型可选') + '</span>' +
+      '</div>';
+
+    // 更多：默认折叠，保留全部次要控件（视图/快捷片/层级/多级条件/批量/树工具/等效 glob/文本策略）
+    const viewToggle = '<div class="seg view-toggle" role="group" aria-label="列表视图">' +
+      '<button type="button" class="seg-btn" data-action="view" data-view="tree" aria-pressed="' + (S.view === 'tree') + '" title="树状视图">' + ic('list-tree') + ' 树状</button>' +
+      '<button type="button" class="seg-btn" data-action="view" data-view="flat" aria-pressed="' + (S.view === 'flat') + '" title="跨目录扁平列表">' + ic('list-flat') + ' 扁平</button>' +
+      '</div>';
+    const pkMore = '<div class="pk-more" id="pk-more"' + (S.moreOpen ? '' : ' hidden') + '>' +
+      '<div class="pk-more-row">' +
+      '<span class="pk-more-label">显示</span>' + viewToggle +
+      '<span class="pk-more-label">快捷</span><div class="filter-chips" role="group" aria-label="筛选快捷片">' + chipsHtml() + '</div>' +
+      '</div>' +
+      crumbHtml() +
+      advancedFilterHtml() +
+      batchbarHtml() +
+      '<div class="tree-toolbar">' + treeToolbarHtml() + '</div>' +
+      (structured ? '' : policyTextHtml()) +
+      '<div class="pk-glob">' + globPanelHtml() + '</div>' +
+      '</div>';
 
     const errHtml = S.errors.length ? errBox(S.errors[S.errors.length - 1].message) : '';
-    body.innerHTML = fmtRow + (structured ? policyStructuredHtml(tf) : policyTextHtml()) +
-      errHtml + rootRow + filterRow + batchbarHtml() + grid;
+    body.innerHTML = '<div class="picker">' + errHtml + pkBar + pkSearch + pkMore + pkResult + pkTree + pkConfirm + '</div>';
 
-    const v = validateGlob(S.filter.raw);
+    const v = validateGlob(composeRaw());
     const fi = el('filter-input');
     if (fi && !v.ok) { fi.classList.add('is-invalid'); fi.setAttribute('aria-invalid', 'true'); fi.setAttribute('title', 'glob 语法错误：' + v.msg); }
     const fe = el('filter-echo');
@@ -907,46 +1205,6 @@
       ' <span class="g-count">' + n + '</span></summary><div class="group-body">' +
       (n > 0 ? '<div class="issue-line">' + ic(ico) + ' 共 ' + n + ' 项' + label + '，请逐条核对后应用。</div>' : '<div class="issue-line">无</div>') +
       '</div></div>';
-  }
-  function groupsHtml() {
-    rebuildMaps();
-    const changedAll = S.flat.filter(function (f) { return f.changeCount > 0; });
-    const changed = changedAll.slice(0, 500); // 结果树分页保护；计数仍显示真实总数
-    const reasons = S.tree.filter(function (n) { return n.reason; });
-    const ops = opBadges();
-    const byDir = Object.create(null);
-    changed.forEach(function (f) {
-      const d = f.path.indexOf('/') >= 0 ? f.path.split('/')[0] : '(根目录)';
-      (byDir[d] = byDir[d] || []).push(f);
-    });
-    const dirItems = Object.keys(byDir).sort().map(function (d) {
-      return '<div class="group"><summary>' + ic('chevron-down') + ' ' + esc(d) + ' <span class="g-count">' + byDir[d].length + ' 个文件</span></summary>' +
-        '<div class="group-body">' + byDir[d].map(function (f) {
-          return '<div class="group-item">' + ic('file') +
-            '<span class="gi-path" title="' + esc(f.path) + '">' + esc(f.path) + '</span>' +
-            '<span class="badge" aria-label="' + f.changeCount + ' 处变更">●' + f.changeCount + '</span>' + ops +
-            '<button type="button" class="icon-btn" data-action="open-file" data-path="' + esc(f.path) + '" aria-label="跳转到 ' + esc(f.path) + '" title="在编辑器中查看">' + ic('go-to-file') + '</button></div>';
-        }).join('') + '</div></div>';
-    }).join('');
-    const truncated = changedAll.length > changed.length
-      ? '<div class="tree-truncated">' + ic('info') + ' 仅列出前 ' + changed.length + ' 个变更文件（共 ' + changedAll.length + ' 个）。</div>'
-      : '';
-    let html = '<div class="group" id="group-changes"><summary>' + ic('chevron-down') + ' 变更文件 <span class="g-count">' + changedAll.length + '</span></summary>' +
-      '<div class="group-body">' + (dirItems ? dirItems + truncated : '<div class="issue-line">扫描后显示命中文件（按目录分组）</div>') + '</div></div>';
-    html += countGroup('group-warnings', '警示', S.counts.warnings, 'warning', 'is-warn');
-    html += countGroup('group-parseErrors', '解析失败', S.counts.parseErrors, 'error', 'is-bad');
-    html += countGroup('group-conflicts', '冲突', S.counts.conflicts, 'issues', 'is-bad');
-    if (reasons.length) {
-      html += '<div class="group"><summary>' + ic('info') + ' 灰显/跳过说明 <span class="g-count">' + reasons.length + '</span></summary>' +
-        '<div class="group-body">' + reasons.slice(0, 40).map(function (n) {
-          return '<div class="group-item">' + ic(n.kind === 'dir' ? 'folder' : 'file') +
-            '<span class="gi-path">' + esc(n.path) + '</span><span class="gi-reason" title="' + esc(n.reason) + '">' + esc(n.reason) + '</span></div>';
-        }).join('') + '</div></div>';
-    }
-    if (!changedAll.length && !S.counts.warnings && !S.counts.parseErrors && !S.counts.conflicts && !S.report) {
-      html = emptyState('search', '尚无结果。配置指令与文件范围后执行扫描，再预览 Diff。', '立即扫描', 'scan');
-    }
-    return html;
   }
   function renderDiffLines(lines) {
     if (S.diffTextMode) {
@@ -1007,6 +1265,103 @@
       '<button type="button" class="btn btn-sec btn-sm" data-action="report-close">' + ic('close') + ' 返回结果</button>' +
       '</div></div>';
   }
+  /** 0.2.1：第③步「命中树」改为只读树状目录 —— 不可选择，只可展开/折叠，视觉与第①步统一。 */
+  function resultTreeHtml() {
+    rebuildMaps();
+    const changedAll = S.flat.filter(function (f) { return f.changeCount > 0; });
+    const changed = changedAll.slice(0, 500); // 分页保护；计数仍显示真实总数
+    if (!changed.length) return '';
+
+    // 由变更文件的相对路径构建目录树（仅包含有变更的分支，空目录天然不出现）
+    const root = { dirs: new Map(), files: [] };
+    changed.forEach(function (f) {
+      const parts = f.path.split('/');
+      let cur = root;
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        const seg = parts[i];
+        let d = cur.dirs.get(seg);
+        if (!d) {
+          d = { dirs: new Map(), files: [], path: parts.slice(0, i + 1).join('/') };
+          cur.dirs.set(seg, d);
+        }
+        cur = d;
+      }
+      cur.files.push({ name: parts[parts.length - 1], f: f });
+    });
+
+    const ops = opBadges();
+    const MAX = 1500;
+    const rows = [];
+    function walk(node, level) {
+      if (rows.length >= MAX) return;
+      const pad = 6 + level * 14;
+      // 目录：按名称排序
+      const dirs = [...node.dirs.entries()].sort(function (a, b) { return a[0].localeCompare(b[0]); });
+      dirs.forEach(function (pair) {
+        if (rows.length >= MAX) return;
+        const name = pair[0], d = pair[1];
+        const isOpen = S.resultExpanded[d.path] !== false; // 默认展开
+        const cnt = countChangedUnder(changed, d.path);
+        rows.push('<div class="tree-row is-dir is-readonly" role="treeitem" aria-level="' + (level + 1) + '" ' +
+          'aria-expanded="' + isOpen + '" data-rpath="' + esc(d.path) + '" style="padding-left:' + pad + 'px">' +
+          '<button type="button" class="tree-chevron" data-action="result-toggle-dir" data-rpath="' + esc(d.path) + '" ' +
+          'aria-label="' + (isOpen ? '收起 ' : '展开 ') + esc(name) + '" aria-expanded="' + isOpen + '">' +
+          ic(isOpen ? 'chevron-down' : 'chevron-right') + '</button>' +
+          ic('folder', 'tree-icon') +
+          '<span class="tree-label">' + esc(name) + '</span>' +
+          '<span class="row-badge"><span class="badge badge-outline" aria-label="' + cnt + ' 个变更文件">' + cnt + ' 个文件</span></span>' +
+          '</div>');
+        if (isOpen) walk(d, level + 1);
+      });
+      // 文件：只读，无勾选框
+      node.files.sort(function (a, b) { return a.name.localeCompare(b.name); }).forEach(function (it) {
+        if (rows.length >= MAX) return;
+        const fUri = (flatByPath[it.f.path] && flatByPath[it.f.path].uri) || it.f.uri || '';
+        rows.push('<div class="tree-row is-file is-readonly" role="treeitem" aria-level="' + (level + 1) + '" ' +
+          'data-rpath="' + esc(it.f.path) + '" data-diff-uri="' + esc(fUri) + '" ' +
+          'title="双击查看该文件的变更 Diff" style="padding-left:' + (pad + 14) + 'px">' +
+          '<span class="tree-chevron" aria-hidden="true"></span>' + ic('file', 'tree-icon') +
+          '<span class="tree-label" title="' + esc(it.f.path) + '">' + esc(it.name) + '</span>' +
+          '<span class="row-badge"><span class="badge" aria-label="' + it.f.changeCount + ' 处变更">●' + it.f.changeCount + '</span></span>' +
+          ops +
+          '<span class="row-actions"><button type="button" class="icon-btn" data-action="open-file" data-path="' + esc(it.f.path) + '" ' +
+          'aria-label="在编辑器中查看 ' + esc(it.f.path) + '" title="在编辑器中查看">' + ic('go-to-file') + '</button></span>' +
+          '</div>');
+      });
+    }
+    walk(root, 0);
+    const truncated = changedAll.length > changed.length
+      ? '<div class="tree-truncated">' + ic('info') + ' 仅列出前 ' + changed.length + ' 个变更文件（共 ' + changedAll.length + ' 个）。</div>'
+      : '';
+    return '<div class="result-tree-wrap"><div class="tree result-tree" id="group-changes" role="tree" aria-label="变更文件树（只读）">' +
+      rows.join('') + truncated + '</div></div>';
+  }
+  function countChangedUnder(files, dir) {
+    return files.filter(function (f) { return f.path.indexOf(dir + '/') === 0; }).length;
+  }
+  function groupsHtml() {
+    rebuildMaps();
+    const changedAll = S.flat.filter(function (f) { return f.changeCount > 0; });
+    const ops = opBadges();
+    const reasons = S.tree.filter(function (n) { return n.reason; });
+    let html = '<div class="result-head"><span>' + ic('list-tree') + ' 变更文件 <span class="g-count">' + changedAll.length + '</span></span>' +
+      '<span class="sec-note">只读目录树 · 点击目录展开 / 收起</span></div>';
+    html += resultTreeHtml() || '<div class="issue-line">扫描后显示变更文件目录树</div>';
+    html += countGroup('group-warnings', '警示', S.counts.warnings, 'warning', 'is-warn');
+    html += countGroup('group-parseErrors', '解析失败', S.counts.parseErrors, 'error', 'is-bad');
+    html += countGroup('group-conflicts', '冲突', S.counts.conflicts, 'issues', 'is-bad');
+    if (reasons.length) {
+      html += '<div class="group"><summary>' + ic('info') + ' 跳过说明 <span class="g-count">' + reasons.length + '</span></summary>' +
+        '<div class="group-body">' + reasons.slice(0, 40).map(function (n) {
+          return '<div class="group-item">' + ic(n.kind === 'dir' ? 'folder' : 'file') +
+            '<span class="gi-path">' + esc(n.path) + '</span><span class="gi-reason" title="' + esc(n.reason) + '">' + esc(n.reason) + '</span></div>';
+        }).join('') + '</div></div>';
+    }
+    if (!changedAll.length && !S.counts.warnings && !S.counts.parseErrors && !S.counts.conflicts && !S.report) {
+      html = emptyState('search', '尚无结果。配置指令与文件范围后执行扫描，再预览 Diff。', '立即扫描', 'scan');
+    }
+    return html;
+  }
   function renderResults() {
     const body = el('results-body');
     if (!S.hasInit) { body.innerHTML = skeletonHtml(4); return; }
@@ -1014,7 +1369,7 @@
     const reportHtml = (S.report && S.phase === 'report') ? reportPanelHtml(S.report) : '';
     body.innerHTML = errHtml + reportHtml +
       '<div class="results-grid"><div class="results-left">' +
-      '<div class="results-tabs"><span class="field-label">命中树（按目录 / 类型分组）</span></div>' + groupsHtml() +
+      '<div class="results-tabs"><span class="field-label">变更文件目录树（只读）</span></div>' + groupsHtml() +
       '</div><div class="results-right">' + diffPaneHtml() + '</div></div>';
     applyDisabled();
   }
@@ -1034,13 +1389,11 @@
         'aria-label="' + s.label + ' ' + s.v + '，点击跳转到结果分组" title="跳转到「' + s.label + '」分组">' +
         ic(s.ico) + '<span class="ov-label">' + s.label + '</span><span class="ov-num">' + s.v + '</span></button>';
     }).join('');
-    const total = c.total || 0, scanned = c.scanned || 0;
-    const pct = total ? Math.round(scanned / total * 100) : 0;
+    // 0.1.7 反馈：删掉「就绪 N/M」数量对比与进度条（逐文件广播是性能大头）。
+    // 只保留手动刷新 / 取消两个图标入口。
     const scanning = S.phase === 'scanning';
     el('ov-scan').innerHTML =
-      '<span class="ov-scan-text">' + (scanning ? '扫描中' : '就绪') + ' ' + scanned + '/' + total + '</span>' +
-      '<span class="progressbar" role="progressbar" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + scanned + '" aria-label="扫描进度"><i style="width:' + pct + '%"></i></span>' +
-      '<button type="button" class="icon-btn" data-action="scan" aria-label="重新扫描" title="重新扫描">' + ic('refresh') + '</button>' +
+      '<button type="button" class="icon-btn" data-action="scan" aria-label="重新载入文件列表" title="重新载入文件列表">' + ic('refresh') + '</button>' +
       '<button type="button" class="icon-btn" data-action="cancel-scan" aria-label="取消扫描" ' + (scanning ? '' : 'aria-disabled="true" ') + 'title="' + (scanning ? '取消当前扫描' : '仅扫描进行中可取消') + '">' + ic('close') + '</button>';
   }
   function renderErrorStrip() {
@@ -1084,31 +1437,49 @@
   /* ── 0.1.2 三步向导 ─────────────────────────────────────── */
   function renderWizard() {
     const w = el('wizard'); if (!w) return;
+    // 每步实时状态徽标：① 已选 N ② 指令 N ③ 变更 N（不抢主色，tabular-nums）
+    const badgeLabels = ['已选', '指令', '变更'];
+    const badgeVals = [selectedUris().length, S.instructions.length, S.counts.changes || 0];
     const steps = STEPS.map(function (st, i) {
       return (i ? '<span class="wiz-sep" aria-hidden="true"></span>' : '') +
         '<button type="button" class="wiz-step' + (st.id < S.step ? ' is-done' : '') + '" data-action="wizard-step" data-step="' + st.id + '"' +
         (S.step === st.id ? ' aria-current="step"' : '') + ' title="跳到第 ' + st.id + ' 步：' + esc(st.label) + '">' +
-        '<span class="wiz-n">' + (st.id < S.step ? ic('check') : st.id) + '</span>' + esc(st.label) + '</button>';
+        '<span class="wiz-n">' + (st.id < S.step ? ic('check') : st.id) + '</span>' + esc(st.label) +
+        '<span class="wiz-badge"><span class="wb-label">' + badgeLabels[i] + '</span><span class="wb-n">' + badgeVals[i] + '</span></span>' +
+        '</button>';
     }).join('');
-    const scanning = S.phase === 'scanning';
-    const scanBtn = S.step === 1
-      ? '<button type="button" class="btn btn-primary btn-sm" data-action="scan-files"' +
-        (scanning ? ' aria-disabled="true"' : '') + ' title="按当前目录与过滤条件载入文件列表">' +
-        ic('search') + ' 扫描文件</button>'
-      : '';
-    w.innerHTML = steps + '<div class="wiz-actions">' +
-      (S.step > 1 ? '<button type="button" class="btn btn-sec btn-sm" data-action="wizard-step" data-step="' + (S.step - 1) + '">' + ic('arrow-left') + ' 上一步</button>' : '') +
-      scanBtn +
-      (S.step < 3 ? '<button type="button" class="btn btn-sec btn-sm" data-action="wizard-step" data-step="' + (S.step + 1) + '">下一步 ' + ic('arrow-right') + '</button>' : '') +
-      '</div>';
+    // 0.1.7 反馈：删除「扫描文件」按钮，改为设定目录/筛选条件后自动载入。
+    // 0.1.9：前一步/后一步引导统一由底栏提供，向导条不再重复按钮（步骤本身可点跳转）。
+    w.innerHTML = steps;
     const h = el('wiz-hint');
     if (h) {
       const hints = [
-        '第 ① 步：默认以 VS Code 打开的工作区为根目录，可点「选择目录…」改到任意目录（含工作区之外）；设定过滤条件后点「扫描文件」载入列表，再勾选要修改的文件。页面初始不扫描任何文件。',
-        '第 ② 步：新增 / 修改 / 删除要写入的值（结构化 set / delete / insert 或文本 sed 替换）。双击文件行可预览源文件格式。',
-        '第 ③ 步：核对 diff 预览，点「应用」一次提交并全部保存；误改可一键回退。',
+        '默认全部不选中，点「全选匹配」加入修改列表；换筛选条件不会清空已选，可多次追加（仅 ' + (whitelistText() || '全部类型') + ' 显示并可修改，其它后缀已隐藏）。',
+        '添加指令：设置 / 删除 / 新增值，或切到文本 sed 做正则替换。',
+        '核对 Diff 后点「应用」一次提交并保存，误改可一键回退。',
       ];
       h.innerHTML = ic('info') + '<span>' + esc(hints[S.step - 1] || hints[0]) + '</span>';
+    }
+    renderStepFooters();
+  }
+  /** 每步区块底部的「步骤落点」：左侧状态摘要 + 右侧下一步主 CTA（第③步落点是底栏，不加）。 */
+  function renderStepFooters() {
+    const sf = el('scope-footer');
+    if (sf) sf.innerHTML = ''; // 第①步落点已合并进「文件选择器」底部的确认条（实时刷新）
+    const inf = el('ins-footer');
+    if (inf) inf.innerHTML = ''; // 下一步引导统一由底栏提供
+  }
+  /** 换步统一入口：先 flush 未落定编辑，再换步；进入第③步时按需自动预览一次。 */
+  function gotoStep(st) {
+    flushPending(); // 换步前先把未落定的编辑发给宿主，避免下一步拿到过期结果
+    S.step = (st >= 1 && st <= 3) ? st : 1;
+    renderWizard(); applyStep(); renderBottomBar(); renderResults(); applyDisabled();
+    announce('已进入第 ' + S.step + ' 步：' + STEPS[S.step - 1].label);
+    // 第③步提速：有变更但还没 Diff 时自动预览一次（仅换步触发，不循环；手动按钮保留）。
+    // flushPending 已在上方执行，宿主 previewAll 前还会 flushRecompute，消息顺序安全。
+    if (S.step === 3 && (S.counts.changes || 0) > 0 && !S.diffs.length &&
+      S.phase !== 'applying' && S.phase !== 'scanning') {
+      post({ type: 'previewAll' });
     }
   }
   function applyStep() {
@@ -1154,6 +1525,39 @@
     if (m) { m.hidden = false; const b = m.querySelector('[data-action="preview-close"]'); if (b) b.focus(); }
   }
 
+  function bottomBarNavHtml() {
+    const step = S.step;
+    const labels = ['', '写修改命令', '预览并应用'];
+    const hints = [
+      '',
+      '第 ① 步：确认要修改的文件范围',
+      '第 ② 步：写好要写入 / 删除的命令',
+    ];
+    const prev = step > 1
+      ? '<button type="button" class="btn btn-sec" data-action="wizard-step" data-step="' + (step - 1) + '">' + ic('arrow-left') + ' 上一步</button>'
+      : '';
+    const next = '<button type="button" class="btn btn-primary" data-action="wizard-step" data-step="' + (step + 1) + '">' +
+      '下一步：' + esc(labels[step]) + ' ' + ic('arrow-right') + '</button>';
+    return '<div class="bb-nav">' +
+      '<span class="bb-nav-hint">' + ic('info') + ' ' + esc(hints[step]) + '</span>' +
+      '<span class="row-spacer"></span>' + prev + next + '</div>';
+  }
+  function bottomBarActionsHtml() {
+    const n = S.counts.changes || 0, f = S.counts.files || 0;
+    const sel = selectedUris().length;
+    const disabled = sel === 0 || S.phase === 'applying';
+    return '<div class="bb-stats">变更 <span class="bb-n">' + n + '</span> · 文件 <span class="bb-n">' + f + '</span> · 已选 <span class="bb-n">' + sel + '</span></div>' +
+      '<div class="bb-actions">' +
+      '<button type="button" class="btn btn-sec" data-action="preview-all">' + ic('preview') + ' 预览全部 Diff</button>' +
+      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') +
+      ' title="' + (disabled ? '请先选择文件范围或等待应用完成' : '点击即保存所选变更（无需确认），误改可一键回退') + '">' +
+      ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
+      '<button type="button" class="btn btn-sec" data-action="undo-last"' + (S.canUndo ? '' : ' aria-disabled="true"') +
+      ' title="' + (S.canUndo ? '把上次应用过的 ' + S.undoFiles + ' 个文件整体还原并保存' : '暂无可回退的批量修改') + '">' +
+      ic('discard') + ' 一键回退</button>' +
+      '</div>' +
+      '<div class="bb-hint">' + ic('info') + ' 应用即全部保存 · 误改可一键回退（Ctrl+Alt+Z）</div>';
+  }
   function renderBottomBar() {
     const bb = el('bottombar');
     if (S.review.active) {
@@ -1166,17 +1570,8 @@
         '<button type="button" class="btn btn-sec" data-action="review" data-ra="end">结束</button></div>';
       return;
     }
-    const n = S.counts.changes || 0, f = S.counts.files || 0;
-    const sel = selectedUris().length;
-    const disabled = sel === 0 || S.phase === 'applying' || S.step !== 3;
-    bb.innerHTML =
-      '<div class="bb-stats">变更 <span class="bb-n">' + n + '</span> · 文件 <span class="bb-n">' + f + '</span> · 已选 <span class="bb-n">' + sel + '</span></div>' +
-      '<div class="bb-actions">' +
-      '<button type="button" class="btn btn-sec" data-action="preview-all">' + ic('preview') + ' 预览全部 Diff</button>' +
-      '<button type="button" class="btn btn-primary" data-action="apply"' + (disabled ? ' aria-disabled="true"' : '') + ' title="' + (S.step !== 3 ? '请先完成「① 选择文件」与「② 编辑值」，到第 ③ 步再应用' : (disabled ? '请先选择文件范围或等待应用完成' : '点击即保存所选变更（无需确认），误改可一键回退')) + '">' + ic('check') + ' 应用 ' + n + ' 处变更 ' + ic('arrow-right') + '</button>' +
-      '<button type="button" class="btn btn-sec" data-action="undo-last"' + (S.canUndo ? '' : ' aria-disabled="true"') + ' title="' + (S.canUndo ? '把上次应用过的 ' + S.undoFiles + ' 个文件整体还原并保存' : '暂无可回退的批量修改') + '">' + ic('discard') + ' 一键回退</button>' +
-      '</div>' +
-      '<div class="bb-hint">' + ic('info') + ' 应用即全部保存 · 误改可一键回退（Ctrl+Alt+Z）</div>';
+    // 0.1.9 反馈：前两步底栏只显示上一步/下一步引导；「预览/应用/回退」只在第③步出现。
+    bb.innerHTML = S.step === 3 ? bottomBarActionsHtml() : bottomBarNavHtml();
   }
 
   /* ── 四态：禁用 ─────────────────────────────────────────── */
@@ -1206,7 +1601,7 @@
       if (disabled) { if (!head.getAttribute('title')) { head.setAttribute('data-busy-title', '1'); head.setAttribute('title', reason); } }
       else if (head.getAttribute('data-busy-title') === '1') { head.removeAttribute('title'); head.removeAttribute('data-busy-title'); }
     }
-    sec.querySelectorAll('.sec-head button, .sec-head input, .sec-head select, .sec-body button, .sec-body input, .sec-body select, .sec-body textarea, .sec-body [role="checkbox"]').forEach(function (c) {
+    sec.querySelectorAll('.sec-head button, .sec-head input, .sec-head select, .sec-body button, .sec-body input, .sec-body select, .sec-body textarea, .sec-body [role="checkbox"], .step-footer button').forEach(function (c) {
       if (c.closest && c.closest('.batchbar')) return; // 批量条单独处理，避免两套逻辑互相覆盖
       markDisabled(c, disabled, reason);
     });
@@ -1245,7 +1640,11 @@
     S.title = p.title || S.title;
     S.instructions = Array.isArray(p.instructions) ? p.instructions.map(normalizeIns) : [];
     S.selection = normalizeSelection(p.selection);
-    S.filter = normalizeFilter(p.filter);
+    // 多级筛选条件只存在前端：面板重开时优先保留本地持久化的条件，
+    // 仅当本地完全没有条件时才采用宿主下发的 raw（兼容旧表达式）。
+    if (!S.filter.rows.length && !S.filter.dirs.length && !S.filter.raw.trim()) {
+      S.filter = normalizeFilter(p.filter);
+    }
     S.view = S.filter.view;
     S.candidateExtensions = p.candidateExtensions || [];
     S.equivalentGlob = Array.isArray(p.equivalentGlob) ? p.equivalentGlob : [];
@@ -1264,6 +1663,9 @@
     document.title = S.title;
     persist();
     renderAll();
+    // 面板重开时若恢复了持久化的过滤条件，补发一次 setFilter 触发宿主自动扫描，
+    // 否则用户会看到「已恢复条件但树是空的」。
+    if (S.filter.raw.trim() || S.filter.rows.length || S.filter.dirs.length) sendFilter(true);
   }
   function onTree(p) {
     if (!S.hasInit) return; // 初次扫描的 tree 早于 init 时丢弃，避免用空指令渲染
@@ -1397,7 +1799,17 @@
     // 远程桌面 / VNC 常不派发 dblclick；用第二次 click 的 detail===2 兜底触发预览。
     if (e.detail === 2) {
       const prow = previewTargetFrom(e);
-      if (prow) { e.preventDefault(); openPreviewFor(prow); return; }
+      if (prow) {
+        e.preventDefault();
+        if (switchDiffFromResultTree(prow)) return;
+        openPreviewFor(prow); return;
+      }
+    }
+    // 0.2.2：结果树行「单击」也立即切换右侧 Diff（远程桌面常不派发 dblclick，单击兜底更可靠）。
+    const srow = e.target.closest ? e.target.closest('.result-tree .tree-row.is-file.is-readonly') : null;
+    if (srow && !(e.target.closest('[data-action]'))) {
+      switchDiffFromResultTree(srow);
+      return;
     }
     const t = e.target.closest ? e.target.closest('[data-action]') : null;
     if (!t) { closeDirMenu(); return; }
@@ -1406,13 +1818,15 @@
     switch (a) {
       case 'wizard-step': {
         const st = parseInt(t.getAttribute('data-step'), 10);
-        flushPending(); // 换步前先把未落定的编辑发给宿主，避免下一步拿到过期结果
-        S.step = (st >= 1 && st <= 3) ? st : 1;
-        renderWizard(); applyStep(); renderBottomBar(); applyDisabled();
-        announce('已进入第 ' + S.step + ' 步：' + STEPS[S.step - 1].label);
+        gotoStep(st);
         break;
       }
-      case 'scan-files': flushPending(); post({ type: 'scan' }); toast('已发出扫描请求，正在按当前范围载入文件列表'); break;
+      case 'wizard-next': {
+        // 步骤落点 CTA：复用 wizard-step 的换步逻辑（flushPending + 换步 + 按需自动预览）
+        const st = parseInt(t.getAttribute('data-step'), 10);
+        gotoStep(isNaN(st) ? S.step + 1 : st);
+        break;
+      }
       case 'pick-directory': post({ type: 'pickDirectory' }); break;
       case 'reset-scope-root': post({ type: 'resetScopeRoot' }); break;
       case 'preview-close': hidePreview(); break;
@@ -1434,17 +1848,20 @@
         S.targetFormat = eng === 'text' ? 'sed' : (S.targetFormat === 'sed' ? 'json' : S.targetFormat);
         persist(); renderInstructions(); renderScopePreserve(); break;
       }
-      case 'target-format': S.targetFormat = t.getAttribute('data-format'); persist(); renderInstructions(); renderScopePreserve(); break;
+      case 'target-format':
+        S.targetFormat = t.getAttribute('data-format'); persist();
+        bumpFlatVersion(); // 白名单变化：勾选集 / 目录三态缓存失效
+        renderInstructions(); renderScopePreserve(); break;
       case 'add-ins': {
         const ins = newInstruction(); S.instructions.push(ins); S.activeInstructionId = ins.id;
-        commitInstructions(true); renderInstructions(); announce('已添加指令'); break;
+        commitInstructions(true); renderInstructions(); renderWizard(); announce('已添加指令'); break;
       }
       case 'del-ins': {
         const id = t.getAttribute('data-id');
         S.instructions = S.instructions.filter(function (i) { return i.id !== id; });
         if (S.activeInstructionId === id) S.activeInstructionId = S.instructions.length ? S.instructions[0].id : null;
         if (S.scopeEditId === id) S.scopeEditId = null;
-        commitInstructions(true); renderInstructions(); break;
+        commitInstructions(true); renderInstructions(); renderWizard(); break;
       }
       case 'toggle-ins-scope': {
         const id = t.getAttribute('data-id');
@@ -1481,12 +1898,44 @@
         applyPolicyToActive(); commitInstructions(true);
         renderScopePreserve(); renderInstructions(); break;
       }
-      case 'chip': S.filter.raw = t.getAttribute('data-value'); sendFilter(true); renderScopePreserve(); break;
+      case 'toggle-more':
+        S.moreOpen = !S.moreOpen; renderScopePreserve(); break;
+      case 'filter-advanced':
+        S.filter.advanced = !S.filter.advanced; persist(); renderScopePreserve(); break;
+      case 'filter-add':
+        S.filter.rows.push({ id: uid(), dim: 'path', op: 'include', value: '' });
+        S.filter.advanced = true; S.moreOpen = true; sendFilter(true); renderScopePreserve(); persist(); break;
+      case 'filter-row-del': {
+        const rid = t.getAttribute('data-id');
+        S.filter.rows = S.filter.rows.filter(function (r) { return r.id !== rid; });
+        sendFilter(true); renderScopePreserve(); persist(); break;
+      }
+      case 'filter-mode':
+        S.filter.mode = t.getAttribute('data-mode') === 'or' ? 'or' : 'and';
+        sendFilter(true); renderScopePreserve(); persist(); break;
+      case 'filter-crumb': {
+        const idx = parseInt(t.getAttribute('data-index'), 10);
+        S.filter.dirs = idx < 0 ? [] : S.filter.dirs.slice(0, idx + 1);
+        sendFilter(true); renderScopePreserve(); persist(); break;
+      }
+      case 'filter-crumb-clear':
+        S.filter.dirs = []; sendFilter(true); renderScopePreserve(); persist(); break;
+      case 'focus-dir': {
+        const dir = t.getAttribute('data-path');
+        S.moreOpen = true;
+        const dirs = S.filter.dirs;
+        if (dirs.length && dir.indexOf(dirs[dirs.length - 1] + '/') === 0) dirs.push(dir);
+        else S.filter.dirs = [dir];
+        sendFilter(true); renderScopePreserve(); persist();
+        toast('已逐级聚焦到「' + dir + '」，点面包屑可回退'); break;
+      }
+      case 'chip': S.filter.raw = t.getAttribute('data-value'); sendFilter(true); renderScopePreserve(); persist(); break;
       case 'view': S.view = t.getAttribute('data-view'); S.filter.view = S.view; sendFilter(true); renderScopePreserve(); persist(); break;
       case 'clear-filter':
         post({ type: 'batch', op: 'clearFilter', hits: hitUris() });
         S.filter.raw = ''; S.filter.include = []; S.filter.exclude = [];
-        sendFilter(true); renderScopePreserve(); break;
+        S.filter.rows = []; S.filter.dirs = []; S.filter.mode = 'and'; S.filter.onlySelected = false;
+        sendFilter(true); renderScopePreserve(); persist(); break;
       case 'only-hits': S.onlyHits = !S.onlyHits; persist(); renderScopePreserve(); break;
       case 'show-all':
         S.showAll = !S.showAll; persist();
@@ -1502,9 +1951,14 @@
 
       case 'batch': {
         const op = t.getAttribute('data-op'); const hits = hitUris();
+        if (op === 'clearAll') {
+          S.customSelection = false; S.globMode = 'edit'; persist();
+          post({ type: 'batch', op: 'clearAll', hits: [] });
+          renderBottomBar(); break;
+        }
         if (op === 'keepOnly') {
           showConfirm('仅保留命中集',
-            '<p>将把选择集收敛为当前命中集 <strong>' + hits.length + '</strong> 个文件，命中集之外的已勾选项会被取消。此操作可能大批量取消勾选。</p>',
+            '<p>将把选择集收敛为当前筛选视图 <strong>' + hits.length + '</strong> 个文件，命中集之外的已勾选项会被取消。此操作可能大批量取消勾选。</p>',
             function () { post({ type: 'batch', op: 'keepOnly', hits: hits }); });
           return;
         }
@@ -1519,15 +1973,39 @@
       }
       case 'tri': {
         const path = t.getAttribute('data-path'), kind = t.getAttribute('data-kind');
+        if (kind === 'file' && lockedByPath(path)) {
+          toast('此后缀不可勾选：当前目标格式只支持 ' + (whitelistText() || '全部类型'));
+          break;
+        }
         const next = t.getAttribute('aria-checked') !== 'true';
         if (kind === 'dir') {
-          const visibleUris = visibleFlat().filter(function (f) { return f.path.indexOf(path + '/') === 0; }).map(function (f) { return f.uri; }).filter(Boolean);
+          // 所见即所得：目录级联只作用于当前筛选视图内的后代
+          const visibleUris = visibleFlat().filter(function (f) { return !isLocked(f) && f.path.indexOf(path + '/') === 0; }).map(function (f) { return f.uri; }).filter(Boolean);
           post({ type: 'selectFolder', path: path, checked: next, visibleUris: visibleUris });
+          toast((next ? '已勾选' : '已取消') + '「' + path + '」下可见的 ' + visibleUris.length + ' 个文件（筛选外不受影响）');
+          lastTriPath = path;
+        } else if (e.shiftKey && lastTriPath) {
+          const vis = visibleFlat();
+          const a = vis.findIndex(function (f) { return f.path === lastTriPath; });
+          const b = vis.findIndex(function (f) { return f.path === path; });
+          let targets = (a >= 0 && b >= 0 && a !== b)
+            ? vis.slice(Math.min(a, b), Math.max(a, b) + 1)
+            : [flatByPath[path]].filter(Boolean);
+          targets = targets.filter(function (f) { return !isLocked(f); });
+          targets.forEach(function (f) { if (f.uri) post({ type: 'select', uri: f.uri, checked: next }); });
+          toast('范围' + (next ? '勾选' : '取消') + ' ' + targets.length + ' 个文件（Shift 连续选择）');
+          lastTriPath = path;
         } else {
           const f = flatByPath[path]; if (f && f.uri) post({ type: 'select', uri: f.uri, checked: next });
+          lastTriPath = path;
         }
         S.customSelection = true; S.globMode = 'summary'; persist();
         break;
+      }
+      case 'result-toggle-dir': {
+        const rp = t.getAttribute('data-rpath');
+        S.resultExpanded[rp] = t.getAttribute('aria-expanded') !== 'true';
+        renderResults(); break;
       }
       case 'toggle-dir': {
         const path = t.getAttribute('data-path');
@@ -1537,7 +2015,7 @@
       case 'dir-menu': openDirMenu(t, t.getAttribute('data-path')); break;
       case 'dir-op': {
         const op = t.getAttribute('data-op'), dir = t.getAttribute('data-dir');
-        const hits = visibleFlat().filter(function (f) { return f.path.indexOf(dir + '/') === 0; }).map(function (f) { return f.uri; }).filter(Boolean);
+        const hits = visibleFlat().filter(function (f) { return !isLocked(f) && f.path.indexOf(dir + '/') === 0; }).map(function (f) { return f.uri; }).filter(Boolean);
         post({ type: 'batch', op: op, hits: hits, dir: dir });
         S.customSelection = true; S.globMode = 'summary'; persist();
         closeDirMenu(); break;
@@ -1548,6 +2026,9 @@
         if (uri) post({ type: 'openFile', uri: uri });
         break;
       }
+      case 'glob-toggle':
+        // 纯 UI 折叠/展开，不触碰 globMode / customSelection，也不发消息
+        S.globExpanded = !S.globExpanded; renderScopePreserve(); break;
       case 'glob-show-edit':
         S.globMode = 'edit'; S.customSelection = false; persist();
         post({ type: 'setGlob', include: S.selection.baseInclude.slice(), exclude: S.selection.baseExclude.slice() });
@@ -1589,8 +2070,17 @@
     const t = e.target;
     if (t.id === 'filter-input') {
       S.filter.raw = t.value;
-      renderFilterEcho();
+      renderFilterEcho(); renderScopePreserve();
       sendFilter();
+      return;
+    }
+    if (t.matches && t.matches('[data-filter-field="value"]') && t.tagName === 'INPUT') {
+      const row = S.filter.rows.find(function (r) { return r.id === t.getAttribute('data-id'); });
+      if (row) {
+        row.value = t.value;
+        renderFilterEcho(); renderScopePreserve();
+        sendFilter(); persist();
+      }
       return;
     }
     if (t.matches && t.matches('[data-ins-field]')) {
@@ -1606,6 +2096,21 @@
   function onChange(e) {
     const t = e.target;
     if (t.id === 'diff-file-select') { S.activeDiff = t.value; persist(); preserveFocus(renderResults); return; }
+    if (t.getAttribute && t.getAttribute('data-action') === 'filter-only-selected') {
+      S.filter.onlySelected = !!t.checked;
+      sendFilter(true); renderScopePreserve(); persist(); return;
+    }
+    if (t.matches && t.matches('[data-filter-field]')) {
+      const row = S.filter.rows.find(function (r) { return r.id === t.getAttribute('data-id'); });
+      if (!row) return;
+      const field = t.getAttribute('data-filter-field');
+      if (field === 'dim') {
+        row.dim = t.value === 'ext' || t.value === 'state' ? t.value : 'path';
+        if (row.dim === 'state' && ['selected', 'hits', 'applicable'].indexOf(row.value) < 0) row.value = 'selected';
+      } else if (field === 'op') row.op = t.value === 'exclude' ? 'exclude' : 'include';
+      else row.value = t.value;
+      sendFilter(true); renderScopePreserve(); persist(); return;
+    }
     if (t.matches && t.matches('[data-ins-field]')) {
       const row = t.closest('[data-ins-row]'); if (!row) return;
       const ins = S.instructions.find(function (i) { return i.id === row.getAttribute('data-id'); }); if (!ins) return;
@@ -1709,9 +2214,24 @@
     if (e.target.closest('[data-action]')) return null;      // 勾选框/按钮双击不触发
     return e.target.closest('.tree-row.is-file');
   }
+  /** 0.2.2：第③步结果树行双击 → 切换右侧 Diff 视图；返回 true 表示已处理。 */
+  function switchDiffFromResultTree(row) {
+    if (!row || !row.classList.contains('is-readonly')) return false;
+    const uri = row.getAttribute('data-diff-uri');
+    if (!uri) return false;
+    if (S.activeDiff !== uri) {
+      S.activeDiff = uri;
+      persist();
+      renderResults();
+    }
+    return true;
+  }
   function onDblClick(e) {
     const row = previewTargetFrom(e);
-    if (row) { e.preventDefault(); openPreviewFor(row); }
+    if (!row) return;
+    e.preventDefault();
+    if (switchDiffFromResultTree(row)) return;
+    openPreviewFor(row);
   }
 
   document.addEventListener('click', onClick);

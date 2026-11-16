@@ -2,7 +2,7 @@
   "name": "replace-json-yaml-edit",
   "displayName": "Batch Replace for JSON & YAML",
   "description": "Batch replace values across JSON, YAML and any text files by path or regex - preview every diff in a visual panel, apply to hundreds of files with one undo.",
-  "version": "0.1.5",
+  "version": "0.2.4",
   "publisher": "ghemail",
   "license": "MIT",
   "repository": {
@@ -111,6 +111,11 @@
         "key": "ctrl+alt+b"
       },
       {
+        "command": "structedit.openPanel",
+        "key": "ctrl+alt+shift+b",
+        "when": "config.batchReplace.enableAltShortcut"
+      },
+      {
         "command": "structedit.undoLast",
         "key": "ctrl+alt+z"
       }
@@ -118,6 +123,11 @@
     "configuration": {
       "title": "Batch Replace for JSON & YAML",
       "properties": {
+        "batchReplace.enableAltShortcut": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "启用备用快捷键 `Ctrl+Alt+Shift+B`（当 `Ctrl+Alt+B` 被其它扩展或系统占用时仍可打开面板）。若两个默认键都冲突，可在 VS Code 键盘快捷方式设置中把 `structedit.openPanel` 绑定到任意组合，详见 README「快捷键」一节。"
+        },
         "batchReplace.maxMatchesPerFile": {
           "type": "number",
           "default": 2000,

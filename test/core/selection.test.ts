@@ -99,3 +99,43 @@ test('§6.2 文件夹勾选生成等效 glob；重置回纯 glob', () => {
   assert.equal(isSelected('config/a.yaml', s), true);
   assert.equal(isSelected('docs/d.md', s), false);
 });
+
+/* ── 0.2.0：默认全不选，选择集由 overrides 累积 ───────────────── */
+test('0.2.0 createSelection() 默认全不选', () => {
+  const s = createSelection();
+  assert.deepEqual(s.baseInclude, []);
+  assert.equal(isSelected('config/a.yaml', s), false);
+  assert.equal(isSelected('docs/d.md', s), false);
+  assert.deepEqual(effectiveFiles(all, s), [], '默认没有任何文件进入选择集');
+});
+
+test('0.2.0 全选匹配只加入命中集，换筛选条件不清空（可多次追加）', () => {
+  const s = createSelection();
+  applyBatch(s, ['config/a.yaml'], all, 'selectAll'); // 第一次筛选结果
+  assert.equal(isSelected('config/a.yaml', s), true);
+  assert.equal(isSelected('config/b.yaml', s), false);
+  assert.equal(isSelected('scripts/c.sh', s), false);
+  // 模拟「换筛选条件」：第二次命中集不同，全选追加，之前选中的保留
+  applyBatch(s, ['config/b.yaml', 'docs/d.md'], all, 'selectAll');
+  assert.equal(isSelected('config/a.yaml', s), true, '第一次的选择应保留');
+  assert.equal(isSelected('config/b.yaml', s), true);
+  assert.equal(isSelected('docs/d.md', s), true);
+  assert.deepEqual(effectiveFiles(all, s).sort(),
+    ['config/a.yaml', 'config/b.yaml', 'docs/d.md']);
+});
+
+test('0.2.0 全选/取消全选/清空全部', () => {
+  const s = createSelection();
+  applyBatch(s, all, all, 'selectAll');
+  assert.equal(effectiveFiles(all, s).length, all.length, '全选应选中全部');
+  applyBatch(s, all, all, 'deselectAll');
+  assert.deepEqual(effectiveFiles(all, s), [], '取消全选应回到全不选');
+
+  applyBatch(s, ['config/a.yaml', 'scripts/c.sh'], all, 'selectAll');
+  assert.equal(effectiveFiles(all, s).length, 2);
+  applyBatch(s, [], all, 'clearAll');
+  assert.deepEqual(effectiveFiles(all, s), [], '清空全部应清除所有累积选择');
+  assert.equal(s.overrides.add.size, 0);
+  assert.equal(s.overrides.remove.size, 0);
+  assert.deepEqual(s.baseInclude, []);
+});

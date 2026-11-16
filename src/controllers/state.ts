@@ -13,7 +13,7 @@ export function zeroCounts(): HostState['counts'] {
 }
 
 export function createInitialState(): HostState {
-  // createSelection() 默认 baseInclude = ['**/*']，baseExclude = []（§6.2）。
+  // createSelection() 默认 baseInclude = []（0.2.0：默认全不选，由 overrides.add 累积）。
   const selection = createSelection();
   const filter = parseTreeFilter('', 'tree');
   selection.treeFilter = filter;

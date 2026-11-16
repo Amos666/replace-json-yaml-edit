@@ -29,15 +29,24 @@ export function planFile(
   const patches: MinimalPatch[] = [];
   const parseErrors: string[] = [];
 
+  // 0.2.1：任何适配器抛异常都降级为该文件跳过，绝不让单文件问题中断整轮扫描
   if (jsonIns.length) {
-    const r = planJsonc(text, jsonIns);
-    patches.push(...r.patches);
-    if (r.parseErrors) parseErrors.push(...r.parseErrors);
+    try {
+      const r = planJsonc(text, jsonIns);
+      patches.push(...r.patches);
+      if (r.parseErrors) parseErrors.push(...r.parseErrors);
+    } catch (e) {
+      parseErrors.push(`JSON 指令规划失败：${(e as Error).message}（已跳过）`);
+    }
   }
   if (yamlIns.length) {
-    const r = planYaml(text, yamlIns);
-    patches.push(...r.patches);
-    if (r.parseErrors) parseErrors.push(...r.parseErrors);
+    try {
+      const r = planYaml(text, yamlIns);
+      patches.push(...r.patches);
+      if (r.parseErrors) parseErrors.push(...r.parseErrors);
+    } catch (e) {
+      parseErrors.push(`YAML 指令规划失败：${(e as Error).message}（已跳过）`);
+    }
   }
   // 文本指令不受结构化解析失败影响，照常执行（§5.4）
   if (textIns.length) {

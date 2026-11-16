@@ -16,3 +16,7 @@ ui-mockup.html
 UI-DELIVERY.md
 docs/**
 media/**
+
+.qwen/**
+
+.multi-project-tool/**
