@@ -288,6 +288,38 @@ test('§10.5 应用即全部保存 + 一键回退落盘还原（0.1.5）', async
   assert.equal((await vscode.workspace.openTextDocument(uri)).isDirty, false, '回退后文档应已保存');
 });
 
+/** 0.2.5：apply 不应把被改文件打开到编辑区（fs.writeFile，不经 TextDocument）。 */
+test('0.2.5 应用字节写入不在编辑区打开被改文件', async () => {
+  const rel = `config/no-open-probe-${Date.now()}.json`;
+  const uri = vscode.Uri.joinPath(root(), rel);
+  const original = '{\n  "a": 1\n}\n';
+  writeFileSync(uri.fsPath, original, 'utf8');
+
+  const state: HostState = createInitialState();
+  const uriStr = uri.toString();
+  state.records.set(uriStr, {
+    uri: uriStr, relPath: rel, name: rel.split('/').pop()!, ext: 'json',
+    applicable: true, instructionCount: 1, changeCount: 1, checked: true,
+    hitRanges: [], hash: hashText(original),
+    patches: planFile(original, rel, [{ id: 's', enabled: true, engine: 'structured', format: 'json', kind: 'set', path: '$.a', value: '2', valueType: 'number', fileScope: { mode: 'fixed', format: 'json' } }]).patches,
+    parseErrors: [], conflictIds: [], scanned: true,
+  });
+  const cfg: HostConfig = { maxMatches: 2000, maxFileSizeMB: 5, maxFiles: 5000, defaultExclude: [] };
+
+  const openedBefore = vscode.window.tabGroups.all.flatMap(g => g.tabs)
+    .filter(t => (t.input as { uri?: vscode.Uri })?.uri?.toString() === uriStr).length;
+  assert.equal(openedBefore, 0, '前置条件：目标文件本就未打开');
+
+  const result = await applyChanges(state, cfg, [uriStr]);
+  await delay(400);
+  assert.equal(result.appliedUris.length, 1, '应应用 1 个文件');
+  assert.equal(readFileSync(uri.fsPath, 'utf8'), '{\n  "a": 2\n}\n', '应字节写入落盘');
+
+  const openedAfter = vscode.window.tabGroups.all.flatMap(g => g.tabs)
+    .filter(t => (t.input as { uri?: vscode.Uri })?.uri?.toString() === uriStr).length;
+  assert.equal(openedAfter, 0, '应用后被改文件不应出现在编辑区标签');
+});
+
 export async function run(): Promise<void> {
   const failures: string[] = [];
   for (const c of cases) {

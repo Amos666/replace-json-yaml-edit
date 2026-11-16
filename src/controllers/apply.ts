@@ -1,7 +1,7 @@
-/** §7.5 应用与一次撤销 + §6.6 hash 二次校验。 */
+/** §7.5 应用与一键回退 + §6.6 hash 二次校验（0.2.5 起字节写入，不打开编辑器）。 */
 
 import * as vscode from 'vscode';
-import { detectConflicts } from '../core/index.ts';
+import { applyPatches, detectConflicts } from '../core/index.ts';
 import { readText } from './scan.ts';
 import type { HostConfig, HostState, SkipItem } from './types.ts';
 
@@ -20,9 +20,9 @@ export interface ApplyResult {
 }
 
 /**
- * 一次 WorkspaceEdit 提交 + 立即保存（0.1.5 反馈：应用即全部 save，用户不再需要
- * 逐个打开被编辑文件确认/保存）。删除类变更同样直接写回——diff 明细在第 ③ 步预览
- * 已给出，误改可用「一键回退」整体还原。
+ * 0.2.5：宿主侧直接字节写入落盘（fs.writeFile），不经 TextDocument / 编辑器标签，
+ * 应用时不会在 VS Code 编辑区打开任何被改文件。删除类变更同样直接写回；误改可用
+ * 「一键回退」按原文快照整体还原。
  * 每个文件 apply 前重读并比对扫描时 hash，不一致跳过进报告（防扫描/应用之间被改动）。
  */
 export async function applyChanges(
@@ -30,11 +30,10 @@ export async function applyChanges(
   cfg: HostConfig,
   uris: string[],
 ): Promise<ApplyResult> {
-  const we = new vscode.WorkspaceEdit();
   const appliedUris: string[] = [];
   const hashSkips: SkipItem[] = [];
   const snapshot: SnapshotEntry[] = [];
-  const opened: Array<{ uri: string; doc: vscode.TextDocument }> = [];
+  const writes: Array<{ uri: string; obj: vscode.Uri; text: string }> = [];
   let changes = 0;
 
   for (const uriStr of uris) {
@@ -56,45 +55,29 @@ export async function applyChanges(
       continue;
     }
 
-    const uri = vscode.Uri.parse(uriStr);
-    let doc: vscode.TextDocument;
-    try {
-      doc = await vscode.workspace.openTextDocument(uri);
-    } catch (e) {
-      hashSkips.push({ uri: uriStr, reason: `打开失败：${(e as Error).message}` });
-      continue;
-    }
-
-    const edits = rec.patches.map((p) =>
-      vscode.TextEdit.replace(
-        new vscode.Range(doc.positionAt(p.start), doc.positionAt(p.end)),
-        p.newText,
-      ),
-    );
-    we.set(uri, edits);
+    // 0.2.5：宿主侧直接把补丁套到原文得到新文本，用 fs.writeFile 写字节。
+    // 不再 openTextDocument / applyEdit / doc.save —— 不会在 VS Code 编辑区打开任何被改文件，
+    // 也不污染编辑器撤销栈与「打开的编辑器」列表（误改用「一键回退」整文件还原）。
+    const newText = applyPatches(reread.text, rec.patches);
+    writes.push({ uri: uriStr, obj: vscode.Uri.parse(uriStr), text: newText });
     appliedUris.push(uriStr);
     snapshot.push({ uri: uriStr, text: reread.text });
-    opened.push({ uri: uriStr, doc });
     changes += rec.patches.length;
   }
 
-  if (appliedUris.length > 0) {
-    const ok = await vscode.workspace.applyEdit(we);
-    if (!ok) throw new Error('应用 WorkspaceEdit 失败，未写入任何文件。');
-  }
-  // 应用即保存：applyEdit 只改内存 buffer，必须显式 doc.save() 才会落盘。
-  const saveFailures = await saveTouchedDocs(opened);
+  const saveFailures = await writeAllBytes(writes);
   return { appliedUris, changes, hashSkips, snapshot, saveFailures };
 }
 
-/** 逐个保存本次触碰的文档（不误伤用户其它未保存文件）。 */
-async function saveTouchedDocs(
-  opened: Array<{ uri: string; doc: vscode.TextDocument }>,
+/** 用 workspace.fs.writeFile 直接落盘（不经 TextDocument，不打开编辑器标签）。 */
+async function writeAllBytes(
+  writes: Array<{ uri: string; obj: vscode.Uri; text: string }>,
 ): Promise<string[]> {
   const failures: string[] = [];
-  for (const { uri, doc } of opened) {
+  const enc = new TextEncoder();
+  for (const { uri, obj, text } of writes) {
     try {
-      await doc.save();
+      await vscode.workspace.fs.writeFile(obj, enc.encode(text));
     } catch (e) {
       failures.push(`${uri}：${(e as Error).message}`);
     }
@@ -102,35 +85,17 @@ async function saveTouchedDocs(
   return failures;
 }
 
-/** 一键回退：整文件还原为上次应用前原文，一次 WorkspaceEdit + 立即保存。 */
+/** 一键回退：整文件还原为上次应用前原文（字节写入，不打开编辑器）。 */
 export async function restoreSnapshot(snapshot: SnapshotEntry[]): Promise<{
   restored: string[];
   saveFailures: string[];
 }> {
-  const we = new vscode.WorkspaceEdit();
-  const opened: Array<{ uri: string; doc: vscode.TextDocument }> = [];
+  const writes: Array<{ uri: string; obj: vscode.Uri; text: string }> = [];
   const restored: string[] = [];
   for (const { uri, text } of snapshot) {
-    const parsed = vscode.Uri.parse(uri);
-    let doc: vscode.TextDocument;
-    try {
-      doc = await vscode.workspace.openTextDocument(parsed);
-    } catch {
-      continue;
-    }
-    we.set(parsed, [
-      vscode.TextEdit.replace(
-        new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length)),
-        text,
-      ),
-    ]);
-    opened.push({ uri, doc });
+    writes.push({ uri, obj: vscode.Uri.parse(uri), text });
     restored.push(uri);
   }
-  if (restored.length > 0) {
-    const ok = await vscode.workspace.applyEdit(we);
-    if (!ok) throw new Error('回退 WorkspaceEdit 失败，未还原任何文件。');
-  }
-  const saveFailures = await saveTouchedDocs(opened);
+  const saveFailures = await writeAllBytes(writes);
   return { restored, saveFailures };
 }

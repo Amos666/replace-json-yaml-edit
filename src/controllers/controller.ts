@@ -2,7 +2,8 @@
  * 宿主层总控：WebviewPanel 生命周期、§8.2 状态机、onDidReceiveMessage 全消息分发、
  * 懒加载扫描（首屏不扫描）、轻量重算、扫描取消、命令（附录 B）。
  *
- * 所有写回必须走 workspace.applyEdit(WorkspaceEdit)（§4.4 原则 2），由 apply.ts 完成。
+ * 0.2.5 起写回走 workspace.fs.writeFile 字节写入（apply.ts），不打开编辑器标签；
+ * 撤销依赖原文快照「一键回退」，不依赖编辑器 undo 栈。
  * 协议约定：selectAllMatches / sequentialReview 以 { type:'command', command } 转发给面板，
  * UI 端会忽略未知 type；宿主侧同时真正执行并回写 tree/review，保证功能可用。
  */
@@ -121,6 +122,11 @@ export class PanelController {
     this.post({ type: 'tree', payload: toTreePayload(this.state) });
   }
 
+  /** 0.2.5：每次重算/扫描后主动下发最新 diff，前端 S.diffs 始终跟随宿主 state。 */
+  private postDiffs(): void {
+    this.post({ type: 'preview', payload: { diffs: this.state.diffs } });
+  }
+
   /** 协议约定转发：HostToWebview 未定义 command 类型，UI 端忽略未知 type。 */
   private postCommand(command: string): void {
     this.post({ type: 'command', command } as unknown as HostToWebview);
@@ -210,6 +216,7 @@ export class PanelController {
       if (cancelled()) return;
       this.state.phase = 'results';
       this.postTree();
+      this.postDiffs();
       this.postState('results');
     } catch (e) {
       if (e instanceof ScanCancelledError || cancelled()) return;
@@ -302,9 +309,11 @@ export class PanelController {
         : undefined;
       if (opts.sendInit) {
         this.post({ type: 'init', payload: toInitPayload(this.state) });
+        this.postDiffs();
         if (truncMsg) this.postState('results', truncMsg);
       } else {
         this.postTree();
+        this.postDiffs();
         this.postState('results', truncMsg);
       }
     } catch (e) {
@@ -577,6 +586,11 @@ export class PanelController {
       const report = buildReport(this.state, result.appliedUris, result.changes, result.hashSkips);
       this.state.lastReport = report;
       this.textCache.clear(); // 文件已变更，缓存失效
+      // 0.2.5：应用后旧 diff 已失效，清空并同步前端，避免报告阶段残留上一轮内容。
+      this.state.diffs = [];
+      this.state.records.forEach((rec) => { rec.patches = []; rec.changeCount = 0; });
+      this.state.counts = { ...this.state.counts, changes: 0, files: 0, warnings: 0, parseErrors: 0, conflicts: 0 };
+      this.postDiffs();
       this.state.phase = 'report';
       this.post({ type: 'report', payload: report });
       this.post({

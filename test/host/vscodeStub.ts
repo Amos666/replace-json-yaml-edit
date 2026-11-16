@@ -53,6 +53,7 @@ export interface StubState {
   applyEditCalls: number;
   /** doc.save() 调用次数：验证「应用即保存 / 回退即保存」。 */
   saveCalls: number;
+  byteWriteCalls: number;
 }
 
 export const stubState: StubState = {
@@ -72,6 +73,7 @@ export const stubState: StubState = {
   config: {},
   applyEditCalls: 0,
   saveCalls: 0,
+  byteWriteCalls: 0,
 };
 
 export function resetStub(opts: { roots: string[] }): void {
@@ -91,6 +93,7 @@ export function resetStub(opts: { roots: string[] }): void {
   stubState.config = {};
   stubState.applyEditCalls = 0;
   stubState.saveCalls = 0;
+  stubState.byteWriteCalls = 0;
   openDocs.clear();
 }
 
@@ -437,6 +440,8 @@ export const workspace = {
     },
     async writeFile(uri: UriImpl, content: Uint8Array): Promise<void> {
       fs.writeFileSync(uri.fsPath, content);
+      stubState.applyEditCalls += 1;   // 计作一次「应用提交」信号
+      stubState.byteWriteCalls += 1;   // 独立记录字节写入次数
     },
     async delete(uri: UriImpl): Promise<void> {
       fs.rmSync(uri.fsPath, { recursive: true, force: true });

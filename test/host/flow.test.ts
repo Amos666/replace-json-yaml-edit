@@ -556,6 +556,12 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       ui.win.document.querySelectorAll('#group-changes .tri').length, 0,
       '结果树不应有任何勾选框（只读）',
     );
+    // 0.2.5：改值进第③步后，宿主应主动推送新 diff（无需手点「预览全部 Diff」），
+    // 右侧 Diff 区在未手动预览前就应显示新值，而不是上一轮的旧内容。
+    await until(
+      () => /new:v3/.test(ui.q('#results-body .diff-scroll')?.textContent ?? ''),
+      '进入第③步后右侧 Diff 应已自动刷新为新值（宿主主动推送）',
+    );
     const toggle = ui.q('#group-changes [data-action="result-toggle-dir"]') as HTMLElement | null;
     assert.ok(toggle, '结果树目录应可展开/折叠');
     const dirRows = ui.win.document.querySelectorAll('#group-changes .tree-row.is-dir').length;
@@ -771,8 +777,8 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
 
   /* ── 0.1.5：应用即全部保存 + 一键回退整体还原 ─────────────── */
   await t.test('应用即全部保存，点「一键回退」整体还原并保存', async () => {
-    const saveBefore = stub.stubState.saveCalls;
-    assert.ok(saveBefore > 0, '应用后应已调用 doc.save()（应用即全部保存）');
+    const saveBefore = stub.stubState.byteWriteCalls;
+    assert.ok(saveBefore > 0, '应用后应已字节写入落盘（应用即全部保存）');
     const undoBtn = ui.q('[data-action="undo-last"]') as HTMLElement | null;
     assert.ok(undoBtn, '底栏应有一键回退按钮');
     assert.notEqual(undoBtn!.getAttribute('aria-disabled'), 'true', '上次应用后回退按钮应可用');
@@ -789,7 +795,7 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
       ),
       '回退后下发 undoState(available=false)',
     );
-    assert.ok(stub.stubState.saveCalls > saveBefore, '回退后同样立即保存');
+    assert.ok(stub.stubState.byteWriteCalls > saveBefore, '回退后同样立即字节写入落盘');
 
     // 最后一次应用的原文应被整体还原：被删的 env 行回来、image 回到上一轮值
     const xs1 = read('aaa/bbbb/xs1.yml');
@@ -801,6 +807,9 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
 
   /* ── 多级筛选：条件行 / AND-OR / 目录层级 / 只看已选 / Shift 范围 ── */
   await t.test('多级筛选与选择逻辑优化', async () => {
+    // 0.2.5：字节写入让前序回退/应用完成更快，留下在途 postTree；先等其处理完再操作，
+    // 避免刚加的筛选条件行被迟到的 scope 重渲染覆盖（测试稳定性，非产品逻辑）。
+    await wait(350);
     ui.click('[data-action="wizard-step"][data-step="1"]');
     ui.click('[data-action="clear-filter"]');
     await until(() => ui.rows().length >= 30, '清除全部筛选后应列出全部 yml 文件');

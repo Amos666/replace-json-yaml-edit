@@ -1477,8 +1477,8 @@
     announce('已进入第 ' + S.step + ' 步：' + STEPS[S.step - 1].label);
     // 第③步提速：有变更但还没 Diff 时自动预览一次（仅换步触发，不循环；手动按钮保留）。
     // flushPending 已在上方执行，宿主 previewAll 前还会 flushRecompute，消息顺序安全。
-    if (S.step === 3 && (S.counts.changes || 0) > 0 && !S.diffs.length &&
-      S.phase !== 'applying' && S.phase !== 'scanning') {
+    // 0.2.5：每次进入第③步都拉取最新 Diff（条件变化/第二轮后 S.diffs 可能过期）。
+    if (S.step === 3 && S.phase !== 'applying' && S.phase !== 'scanning') {
       post({ type: 'previewAll' });
     }
   }
