@@ -27,6 +27,7 @@
  * 【零外部网络】Webview 侧不得发起任何网络请求（§3.3 / §8.0 铁律 3）。
  */
 
+import type { PreviewNode } from '../core/nodePaths.ts';
 import type { Instruction, TreeFilter, FileScope } from '../core/types.ts';
 
 export type Phase = 'input' | 'scanning' | 'results' | 'applying' | 'report';
@@ -93,6 +94,8 @@ export interface FileContentPayload {
   ext: string;
   text: string;
   truncated: boolean;
+  /** 0.2.6 需求1：结构化文件的节点路径清单，供复制 $.a.b。文本/sed 文件为空。 */
+  nodes?: PreviewNode[];
   error?: string;
 }
 
@@ -202,6 +205,8 @@ export type WebviewToHost =
   | { type: 'undoLast' }
   | { type: 'openFile'; uri: string; line?: number }
   | { type: 'previewFile'; uri: string; path: string }
+  /** 0.2.6：复制文本到系统剪贴板（webview 无权限时的降级通道）。 */
+  | { type: 'copyToClipboard'; text: string }
   | { type: 'importExpressionSet' }
   | { type: 'exportExpressionSet'; data: unknown }
   | { type: 'exportReport' }

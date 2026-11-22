@@ -19,5 +19,11 @@ export { planYaml } from './yamlAdapter.ts';
 export { planText } from './textAdapter.ts';
 export { mergePatches, detectConflicts, applyPatches, reversePatches } from './merge.ts';
 export { planFile, planSession } from './engine.ts';
+export {
+  getPathValue, evalWhen, evalExpr, exprToValue, usesExprFeatures,
+} from './expression.ts';
+export type { ExprResult } from './expression.ts';
 export type { PlanOptions, SessionFile, SessionPlan } from './engine.ts';
 export * from './selection.ts';
+export { collectPreviewNodes } from './nodePaths.ts';
+export type { PreviewNode } from './nodePaths.ts';

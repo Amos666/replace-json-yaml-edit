@@ -898,6 +898,73 @@ test('模拟整个修改流程：选文件 → 编辑值 → 预览 → 应用�
     );
   });
 
+  /* ── 0.2.6 需求1：源预览结构节点视图 + 复制路径 ── */
+  await t.test('0.2.6 源预览可切换结构节点并复制路径', async () => {
+    // 注入一个带 nodes 的 fileContent（宿主已生成节点清单）
+    stub.hostToUi({
+      type: 'fileContent',
+      payload: {
+        uri: 'file:///tmp/demo.json', path: 'demo.json', ext: 'json',
+        text: '{\n  "aa": { "bb": 1 }\n}\n', truncated: false,
+        nodes: [
+          { path: '$.aa', line: 2, type: 'object', preview: '{…}' },
+          { path: '$.aa.bb', line: 2, type: 'number', preview: '1' },
+        ],
+      },
+    });
+    await until(() => !!ui.q('[data-action="pv-view"][data-view="structure"]'),
+      '有节点时预览应出现「结构节点」切换');
+    ui.click('[data-action="pv-view"][data-view="structure"]');
+    await until(() => ui.win.document.querySelectorAll('.pv-node-row').length === 2,
+      '结构视图应渲染 2 个节点行');
+    const copyBtn = ui.q('[data-action="copy-node-path"][data-path="$.aa.bb"]');
+    assert.ok(copyBtn, '深层节点应有复制路径按钮，路径为 $.aa.bb');
+    // jsdom 无 navigator.clipboard → 走 fallback，宿主收到 copyToClipboard
+    const before = stub.stubState.uiMessages.filter((m) => m.type === 'copyToClipboard').length;
+    (copyBtn as HTMLElement).click();
+    await until(
+      () => stub.stubState.uiMessages.some((m) =>
+        m.type === 'copyToClipboard' && (m as AnyMsg).text === '$.aa.bb'),
+      '点击复制应下发 copyToClipboard($.aa.bb)',
+    );
+    assert.ok(stub.stubState.uiMessages.filter((m) => m.type === 'copyToClipboard').length > before);
+  });
+
+  /* ── 0.2.6 需求2：表达式/条件 UI 写入指令并下发宿主 ── */
+  await t.test('0.2.6 指令可配置派生值表达式与条件并下发', async () => {
+    ui.click('[data-action="wizard-step"][data-step="2"]');
+    ui.click('[data-action="add-ins"]');
+    const rows = [...ui.win.document.querySelectorAll('[data-ins-row]')];
+    const last = rows[rows.length - 1] as HTMLElement;
+    const id = last.getAttribute('data-id')!;
+    // 展开高级区
+    (last.querySelector('[data-action="toggle-ins-adv"]') as HTMLElement).click();
+    await until(() => !!ui.q('[data-advanced-of="' + id + '"]'), '新指令应展开高级区');
+    // 切到表达式模式
+    const exprBtn = ui.q('[data-advanced-of="' + id + '"] [data-action="ins-valmode"][data-mode="expr"]') as HTMLElement;
+    assert.ok(exprBtn, '高级区应有「表达式」切换');
+    exprBtn.click();
+    await until(() => {
+      const inp = ui.q('[data-advanced-of="' + id + '"] [data-ins-field="valueExpr"]') ||
+        [...ui.win.document.querySelectorAll('[data-ins-field="valueExpr"]')]
+          .find((n) => n.closest('[data-ins-row]')?.getAttribute('data-id') === id);
+      return !!inp;
+    }, '新指令应渲染 valueExpr 输入框');
+    const exprInput = [...ui.win.document.querySelectorAll('[data-ins-field="valueExpr"]')]
+      .find((n) => n.closest('[data-ins-row]')?.getAttribute('data-id') === id) as HTMLInputElement;
+    exprInput.value = '${$.a} + 1';
+    exprInput.dispatchEvent(new ui.win.Event('input', { bubbles: true }));
+    // 添加条件
+    (ui.q('[data-advanced-of="' + id + '"] [data-action="add-when"]') as HTMLElement).click();
+    await until(() => [...ui.win.document.querySelectorAll('[data-when-field="path"]')]
+      .some((n) => n.closest('[data-ins-row]')?.getAttribute('data-id') === id), '应可添加条件行');
+    const sent = stub.stubState.uiMessages.filter((m) => m.type === 'setInstructions');
+    const lastSent = sent[sent.length - 1] as AnyMsg;
+    const ins = (lastSent.instructions as AnyMsg[]).find((i) => i.id === id);
+    assert.ok(ins, '下发的指令应包含新加的指令');
+    assert.equal(ins!.valueExpr, '${$.a} + 1', '表达式应下发宿主');
+    assert.ok(Array.isArray(ins!.when) && ins!.when.length === 1, '条件应下发宿主');
+  });
 
 });
 

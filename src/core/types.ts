@@ -12,6 +12,19 @@ export type TextOp = 'replace' | 'deleteLine';
 
 export type ValueType = 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array';
 
+/** 0.2.6：条件操作符。一期受限集合，不含正则/脚本。 */
+export type CondOp =
+  | 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'
+  | 'contains' | 'exists' | 'notExists';
+
+/** 0.2.6：单条条件：读取 path 的值，与 value 按 op 比较。 */
+export interface WhenCond {
+  path: string;
+  op: CondOp;
+  value?: string; // op=exists/notExists 时可省略
+  valueType?: ValueType; // 比较值类型，缺省 string
+}
+
 /** v1.3：扩展名适用范围，每条指令一个，执行时的唯一依据（§6.1） */
 export type FileScope =
   | { mode: 'fixed'; format: 'json' | 'yaml' } // 结构化：扩展名由格式固定，UI 只读
@@ -36,8 +49,12 @@ export interface Instruction {
   format?: 'json' | 'yaml'; // 目标格式；必须与 fileScope.mode === 'fixed' 一致
   kind?: StructOp;
   path?: string; // 统一路径语法
-  value?: string; // UI 原始输入
+  value?: string; // UI 原始输入（字面量）
   valueType?: ValueType; // 缺省 = 沿用旧值类型
+  /** 0.2.6：派生值表达式，如 "${$.a} + ${$.b}" / "concat($.a, '-', $.b)"。与 value 互斥，优先于 value。 */
+  valueExpr?: string;
+  /** 0.2.6：条件（全部满足才应用该指令）。一期仅结构化 JSON/YAML 支持。 */
+  when?: WhenCond[];
   scope?: 'all' | 'first';
   createPath?: boolean; // set 时父路径不存在是否创建（默认 false）
 

@@ -90,6 +90,9 @@
     step: 1,                          // 三步向导：① 选择文件 ② 编辑值 ③ 预览并应用（不持久化）
     moreOpen: false,                  // 第①步「更多」高级选项折叠态
     previewUri: '',                   // 双击预览弹框当前文件
+    exprEditId: '',                   // 0.2.6 当前展开「表达式/条件」高级区的指令 id
+    pvView: 'text',                    // 0.2.6 预览弹框视图：text=源码 / structure=节点路径树
+    pvNodes: [],                      // 0.2.6 预览弹框的节点路径清单
     scopeRoot: null,                  // 扫描根目录（null = VS Code 打开的工作区；由宿主 init/state 下发）
     canUndo: false,                     // 是否存在可回退的上次应用快照
     undoFiles: 0,                       // 可回退的文件数
@@ -591,6 +594,50 @@
       '</div>';
   }
 
+  /** 0.2.6：指令的高级区——值来源（字面量/表达式）+ 条件（when）。*/
+  function insAdvancedHtml(ins) {
+    const isExpr = !!ins.valueExpr;
+    const whens = Array.isArray(ins.when) ? ins.when : [];
+    const ops = [['eq', '等于'], ['ne', '不等于'], ['gt', '大于'], ['gte', '大于等于'],
+      ['lt', '小于'], ['lte', '小于等于'], ['contains', '包含'], ['exists', '存在'], ['notExists', '不存在']];
+    const vts = ['string', 'number', 'boolean', 'null', 'object', 'array'];
+    let condHtml = '';
+    if (!whens.length) {
+      condHtml = '<div class="when-empty">无条件（始终应用）。可添加条件，仅当满足时才应用该指令。</div>';
+    } else {
+      condHtml = whens.map(function (w, idx) {
+        const op = w.op || 'eq';
+        const noVal = op === 'exists' || op === 'notExists';
+        return '<div class="when-row" data-when-idx="' + idx + '">' +
+          '<input class="when-path" type="text" data-when-field="path" data-id="' + esc(ins.id) + '" data-idx="' + idx + '" value="' + esc(w.path || '') + '" placeholder="$.a.b" aria-label="条件路径" spellcheck="false">' +
+          '<select class="when-op" data-when-field="op" data-id="' + esc(ins.id) + '" data-idx="' + idx + '" aria-label="条件操作符">' +
+          ops.map(function (o) { return '<option value="' + o[0] + '"' + (op === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>' +
+          (noVal ? '' :
+            '<input class="when-value" type="text" data-when-field="value" data-id="' + esc(ins.id) + '" data-idx="' + idx + '" value="' + esc(w.value || '') + '" placeholder="比较值" aria-label="条件比较值" spellcheck="false">' +
+            '<select class="when-vt" data-when-field="valueType" data-id="' + esc(ins.id) + '" data-idx="' + idx + '" aria-label="比较值类型">' +
+            vts.map(function (t) { return '<option value="' + t + '"' + ((w.valueType || 'string') === t ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>') +
+          '<button type="button" class="icon-btn when-del" data-action="del-when" data-id="' + esc(ins.id) + '" data-idx="' + idx + '" aria-label="删除该条件" title="删除条件">' + ic('close') + '</button>' +
+          '</div>';
+      }).join('');
+    }
+    return '<div class="ins-advanced" data-advanced-of="' + esc(ins.id) + '">' +
+      '<div class="adv-block">' +
+        '<div class="adv-label">值来源</div>' +
+        '<div class="seg" role="group" aria-label="值来源">' +
+          '<button type="button" class="seg-btn" data-action="ins-valmode" data-id="' + esc(ins.id) + '" data-mode="literal" aria-pressed="' + (!isExpr) + '">字面量</button>' +
+          '<button type="button" class="seg-btn" data-action="ins-valmode" data-id="' + esc(ins.id) + '" data-mode="expr" aria-pressed="' + (isExpr) + '">表达式</button>' +
+        '</div>' +
+        (isExpr
+          ? '<div class="adv-hint">' + ic('info') + ' 读取的是扫描时的原值。支持 ${$.a.b} 取值、+ - * /、concat(...)。例：${$.price} * ${$.qty}</div>'
+          : '') +
+      '</div>' +
+      '<div class="adv-block">' +
+        '<div class="adv-label">执行条件 <button type="button" class="btn btn-sec btn-sm" data-action="add-when" data-id="' + esc(ins.id) + '">' + ic('add') + ' 添加条件</button></div>' +
+        condHtml +
+      '</div>' +
+      '</div>';
+  }
+
   function renderInsRow(ins) {
     const structured = ins.engine === 'structured';
     const off = !ins.enabled;
@@ -614,8 +661,11 @@
         ic('globe') + ' ' + esc(scopeText(fs)) + ' ' + ic(S.scopeEditId === ins.id ? 'chevron-down' : 'chevron-right') + '</button>';
     }
 
+    const exprMode = structured && ins.valueExpr !== undefined && ins.valueExpr !== null;
     const valInput = hasValue
-      ? '<input class="ins-text ins-value" type="text" data-ins-field="' + (structured ? 'value' : 'replacement') + '" value="' + esc(ins[structured ? 'value' : 'replacement'] || '') + '" placeholder="' + (structured ? '新值' : '替换为（$1..$9）') + '" aria-label="' + (structured ? '新值' : '替换为') + '">'
+      ? (exprMode
+        ? '<input class="ins-text ins-value is-expr" type="text" data-ins-field="valueExpr" value="' + esc(ins.valueExpr || '') + '" placeholder="${$.a} + ${$.b} / concat($.x, \'-\', $.y)" aria-label="派生值表达式" spellcheck="false">'
+        : '<input class="ins-text ins-value" type="text" data-ins-field="' + (structured ? 'value' : 'replacement') + '" value="' + esc(ins[structured ? 'value' : 'replacement'] || '') + '" placeholder="' + (structured ? '新值' : '替换为（$1..$9）') + '" aria-label="' + (structured ? '新值' : '替换为') + '">')
       : '';
     const typeOrFlags = structured
       ? '<select class="ins-type" data-ins-field="valueType" aria-label="值类型"' + (opVal === 'delete' ? ' disabled' : '') + '>' +
@@ -638,9 +688,11 @@
       '</select>' + scopeCtrl +
       '<input class="ins-text ins-path" type="text" data-ins-field="' + (structured ? 'path' : 'pattern') + '" value="' + esc(ins[structured ? 'path' : 'pattern'] || '') + '" placeholder="' + (structured ? '路径 $.a.b[0].c' : '模式（JS 正则源文本）') + '" aria-label="' + (structured ? '结构化路径' : '匹配模式') + '">' +
       valInput + typeOrFlags +
+      (structured ? '<button type="button" class="icon-btn ins-adv" data-action="toggle-ins-adv" data-id="' + esc(ins.id) + '" aria-expanded="' + (S.exprEditId === ins.id) + '" aria-label="表达式与条件（高级）" title="派生值表达式 / 条件判断">' + ic('symbol-function') + (ins.valueExpr || (ins.when && ins.when.length) ? ' *' : '') + '</button>' : '') +
       '<button type="button" class="icon-btn ins-del" data-action="del-ins" data-id="' + esc(ins.id) + '" aria-label="删除该指令" title="删除指令">' + ic('trash') + '</button>' +
       '</div>' +
       '<div class="ins-meta"><span>' + meta1 + '</span><span>' + meta2 + '</span><span>' + meta3 + '</span></div>' +
+      (structured && S.exprEditId === ins.id ? insAdvancedHtml(ins) : '') +
       ((S.scopeEditId === ins.id && !structured) ? insScopeEditHtml(ins) : '') +
       '</div>';
   }
@@ -1491,6 +1543,37 @@
 
   /* ── 0.1.2 双击文件预览 ─────────────────────────────────── */
   function hidePreview() { const m = el('preview-modal'); if (m) m.hidden = true; }
+  /** 0.2.6：渲染预览弹框正文（文本 / 结构节点两视图）。 */
+  function renderPreviewBody(p) {
+    const body = el('preview-body');
+    if (!body) return;
+    if (p.error) { body.innerHTML = '<div class="pv-error">' + ic('warning') + ' ' + esc(p.error) + '</div>'; return; }
+    if (S.pvView === 'structure' && S.pvNodes.length) {
+      let html = '<div class="pv-nodes">';
+      html += '<div class="pv-nodes-head"><span>路径（点击复制）</span><span>类型 / 值</span></div>';
+      S.pvNodes.forEach(function (n) {
+        html += '<div class="pv-node-row" data-node-path="' + esc(n.path) + '">' +
+          '<button type="button" class="pv-node-copy" data-action="copy-node-path" data-path="' + esc(n.path) + '" title="复制路径 ' + esc(n.path) + '">' +
+            '<span class="pv-node-path">' + esc(n.path) + '</span>' + ic('copy') +
+          '</button>' +
+          '<span class="pv-node-meta"><span class="pv-node-type">' + esc(n.type) + '</span><span class="pv-node-val" title="' + esc(n.preview) + '">' + esc(n.preview) + '</span><span class="pv-node-line">L' + n.line + '</span></span>' +
+          '</div>';
+      });
+      html += '</div>';
+      body.innerHTML = html;
+      return;
+    }
+    const lines = String(p.text || '').split('\n');
+    const shown = lines.slice(0, 1500);
+    let html = '<div class="pv-code">';
+    shown.forEach(function (ln, i) {
+      html += '<div class="pv-line"><span class="pv-no">' + (i + 1) +
+        '</span><span class="pv-text">' + esc(ln || ' ') + '</span></div>';
+    });
+    html += '</div>';
+    body.innerHTML = html;
+  }
+
   function onFileContent(p) {
     S.previewUri = p.uri || '';
     const title = el('preview-title');
@@ -1498,29 +1581,27 @@
       title.innerHTML = ic('file') + '<span class="pv-path">' + esc(p.path || p.uri || '') + '</span>' +
         (p.ext ? '<span class="badge ext-badge">' + esc(p.ext) + '</span>' : '');
     }
+    S.pvText = String(p.text || '');
+    S.pvNodes = Array.isArray(p.nodes) ? p.nodes : [];
+    if (!S.pvNodes.length) S.pvView = 'text';
     const tb = el('pv-toolbar');
-    if (tb) tb.innerHTML = ic('info') + '<span>源文件只读预览 · 用于定位要修改的值，不会改动文件</span>';
-    const body = el('preview-body');
-    const note = el('pv-note-inline');
-    if (note) note.innerHTML = '';
-    if (body) {
-      if (p.error) {
-        body.innerHTML = '<div class="pv-error">' + ic('warning') + ' ' + esc(p.error) + '</div>';
-      } else {
-        const lines = String(p.text || '').split('\n');
-        const shown = lines.slice(0, 1500);
-        let html = '<div class="pv-code">';
-        shown.forEach(function (ln, i) {
-          html += '<div class="pv-line"><span class="pv-no">' + (i + 1) +
-            '</span><span class="pv-text">' + esc(ln || ' ') + '</span></div>';
-        });
-        html += '</div>';
-        body.innerHTML = html;
-        if (note && (p.truncated || lines.length > shown.length)) {
-          note.innerHTML = ic('warning') + ' 内容已截断，仅显示前 ' + shown.length + ' 行';
-        }
+    if (tb) {
+      let bar = '';
+      if (S.pvNodes.length) {
+        bar += '<div class="seg" role="group" aria-label="预览视图">' +
+          '<button type="button" class="seg-btn" data-action="pv-view" data-view="text" aria-pressed="' + (S.pvView === 'text') + '">文本</button>' +
+          '<button type="button" class="seg-btn" data-action="pv-view" data-view="structure" aria-pressed="' + (S.pvView === 'structure') + '">结构节点 (' + S.pvNodes.length + ')</button>' +
+          '</div>';
       }
+      bar += ic('info') + '<span>源文件只读预览 · 用于定位要修改的值，不会改动文件</span>';
+      tb.innerHTML = bar;
     }
+    const body = el('preview-body');
+    renderPreviewBody(p);
+    const note = el('pv-note-inline');
+    if (note && p.truncated && S.pvView === 'text') {
+      note.innerHTML = ic('warning') + ' 内容已截断（只预览前 128KB / 节点只取前 1500 行）';
+    } else if (note) note.innerHTML = '';
     const m = el('preview-modal');
     if (m) { m.hidden = false; const b = m.querySelector('[data-action="preview-close"]'); if (b) b.focus(); }
   }
@@ -1831,6 +1912,25 @@
       case 'reset-scope-root': post({ type: 'resetScopeRoot' }); break;
       case 'preview-close': hidePreview(); break;
       case 'preview-open-editor': if (S.previewUri) post({ type: 'openFile', uri: S.previewUri }); break;
+      case 'pv-view': {
+        S.pvView = t.getAttribute('data-view') === 'structure' ? 'structure' : 'text';
+        renderPreviewBody({ text: S.pvText || '', error: undefined });
+        break;
+      }
+      case 'copy-node-path': {
+        const path = t.getAttribute('data-path') || '';
+        if (!path) break;
+        (function () {
+          const done = function () { toast('已复制 ' + path); };
+          const fallback = function () { post({ type: 'copyToClipboard', text: path }); done(); };
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(path).then(done, fallback);
+            } else fallback();
+          } catch (_e) { fallback(); }
+        })();
+        break;
+      }
 
       case 'import': post({ type: 'importExpressionSet' }); break;
       case 'export': post({ type: 'exportExpressionSet', data: buildExpressionSet() }); toast('已发出导出请求'); break;
@@ -1866,6 +1966,35 @@
       case 'toggle-ins-scope': {
         const id = t.getAttribute('data-id');
         S.scopeEditId = S.scopeEditId === id ? null : id; renderInstructions(); break;
+      }
+      case 'toggle-ins-adv': {
+        const id = t.getAttribute('data-id');
+        S.exprEditId = S.exprEditId === id ? '' : id; renderInstructions(); break;
+      }
+      case 'ins-valmode': {
+        const id = t.getAttribute('data-id'), mode = t.getAttribute('data-mode');
+        const ins = S.instructions.find(function (i) { return i.id === id; }); if (!ins) return;
+        if (mode === 'expr') {
+          ins.valueExpr = (ins.valueExpr !== undefined && ins.valueExpr !== null) ? ins.valueExpr : (ins.value || '');
+        } else {
+          ins.value = ins.valueExpr || ins.value || '';
+          ins.valueExpr = undefined;
+        }
+        commitInstructions(true); renderInstructions(); break;
+      }
+      case 'add-when': {
+        const id = t.getAttribute('data-id');
+        const ins = S.instructions.find(function (i) { return i.id === id; }); if (!ins) return;
+        if (!Array.isArray(ins.when)) ins.when = [];
+        ins.when.push({ path: '', op: 'eq', value: '', valueType: 'string' });
+        commitInstructions(true); renderInstructions(); break;
+      }
+      case 'del-when': {
+        const id = t.getAttribute('data-id'), idx = parseInt(t.getAttribute('data-idx'), 10);
+        const ins = S.instructions.find(function (i) { return i.id === id; }); if (!ins || !Array.isArray(ins.when)) return;
+        ins.when.splice(idx, 1);
+        if (!ins.when.length) ins.when = undefined;
+        commitInstructions(true); renderInstructions(); break;
       }
       case 'ins-format': {
         const id = t.getAttribute('data-id'), fmt = t.getAttribute('data-format');
@@ -2083,6 +2212,14 @@
       }
       return;
     }
+    if (t.matches && t.matches('[data-when-field]')) {
+      const ins = S.instructions.find(function (i) { return i.id === t.getAttribute('data-id'); }); if (!ins) return;
+      const idx = parseInt(t.getAttribute('data-idx'), 10);
+      if (!Array.isArray(ins.when) || !ins.when[idx]) return;
+      ins.when[idx][t.getAttribute('data-when-field')] = t.value;
+      commitInstructions();
+      return;
+    }
     if (t.matches && t.matches('[data-ins-field]')) {
       const row = t.closest('[data-ins-row]'); if (!row) return;
       const ins = S.instructions.find(function (i) { return i.id === row.getAttribute('data-id'); }); if (!ins) return;
@@ -2110,6 +2247,14 @@
       } else if (field === 'op') row.op = t.value === 'exclude' ? 'exclude' : 'include';
       else row.value = t.value;
       sendFilter(true); renderScopePreserve(); persist(); return;
+    }
+    if (t.matches && t.matches('[data-when-field]')) {
+      const ins = S.instructions.find(function (i) { return i.id === t.getAttribute('data-id'); }); if (!ins) return;
+      const idx = parseInt(t.getAttribute('data-idx'), 10);
+      if (!Array.isArray(ins.when) || !ins.when[idx]) return;
+      ins.when[idx][t.getAttribute('data-when-field')] = t.value;
+      commitInstructions(true);
+      return;
     }
     if (t.matches && t.matches('[data-ins-field]')) {
       const row = t.closest('[data-ins-row]'); if (!row) return;

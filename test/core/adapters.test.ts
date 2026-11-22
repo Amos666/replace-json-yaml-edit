@@ -11,6 +11,16 @@ import {
 } from '../../src/core/index.ts';
 import type { Instruction, ValueType } from '../../src/core/index.ts';
 
+
+function structuredExpr(
+  id: string, format: 'json' | 'yaml', kind: 'set' | 'delete' | 'insert',
+  path: string, valueExpr: string,
+): Instruction {
+  return {
+    id, enabled: true, engine: 'structured', format,
+    fileScope: { mode: 'fixed', format }, kind, path, valueExpr,
+  } as Instruction;
+}
 function structured(
   id: string,
   format: 'json' | 'yaml',
@@ -395,4 +405,47 @@ test('0.2.3 YAML 用户场景：两条顶层新增 + 深层 $.tags.bbb.aa 均生
   assert.equal(js.aaa, 1);
   assert.equal(js.bbb, 2);
   assert.deepEqual(js.tags[2], { bbb: { aa: 33333 } });
+});
+
+
+/* ── 0.2.6 需求2一期：派生值 + 条件判断（经 planFile 完整流程） ── */
+test('0.2.6 派生值：JSON 新值=其它两值之和，按路径取值、缩进保持', () => {
+  const before = '{\n  "a": 10,\n  "b": 5,\n  "c": 0\n}\n';
+  const ins: Instruction[] = [structuredExpr('e', 'json', 'set', '$.c', '${$.a} + ${$.b}')];
+  const r = planFile(before, 'a.json', ins);
+  const out = applyPatches(before, r.patches);
+  assert.equal(out, '{\n  "a": 10,\n  "b": 5,\n  "c": 15\n}\n');
+});
+
+test('0.2.6 条件：不满足时跳过该指令、不产补丁；满足时正常写入', () => {
+  const before = '{\n  "a": 3\n}\n';
+  const skip: Instruction[] = [{
+    ...structured('s', 'json', 'set', '$.a', '99', 'number'),
+    when: [{ path: '$.a', op: 'gt', value: '5', valueType: 'number' }],
+  }];
+  const rSkip = planFile(before, 'a.json', skip);
+  assert.equal(applyPatches(before, rSkip.patches), before, '条件不满足不应改动');
+
+  const pass: Instruction[] = [{
+    ...structured('p', 'json', 'set', '$.a', '99', 'number'),
+    when: [{ path: '$.a', op: 'lt', value: '5', valueType: 'number' }],
+  }];
+  const rPass = planFile(before, 'a.json', pass);
+  assert.equal(applyPatches(before, rPass.patches), '{\n  "a": 99\n}\n');
+});
+
+test('0.2.6 YAML 派生值 + concat：字符串拼接后设置', () => {
+  const before = 'first: hello\nlast: world\nfull: ""\n';
+  const ins: Instruction[] = [structuredExpr('e', 'yaml', 'set', '$.full', "concat(${$.first}, '-', ${$.last})")];
+  const r = planFile(before, 'a.yaml', ins);
+  const out = applyPatches(before, r.patches);
+  assert.match(out, /full: ["']?hello-world["']?/); // 沿用原引号风格
+});
+
+test('0.2.6 表达式错误降级为 skip，不写坏文件', () => {
+  const before = '{\n  "a": 1\n}\n';
+  const ins: Instruction[] = [structuredExpr('e', 'json', 'set', '$.a', '${$.missing} + 1')];
+  const r = planFile(before, 'a.json', ins);
+  assert.equal(applyPatches(before, r.patches), before);
+  assert.ok(r.parseErrors && r.parseErrors.some(m => m.includes('表达式求值失败')));
 });

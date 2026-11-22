@@ -25,6 +25,7 @@ import { buildReport, exportReport, showReport } from './report.ts';
 import {
   readConfig, recomputeFilter, refreshFileList, runScan, ScanCancelledError,
 } from './scan.ts';
+import { collectPreviewNodes } from '../core/nodePaths.ts';
 import {
   applyExpressionSet, buildEquivalentGlob, createInitialState, toInitPayload, toTreePayload,
 } from './state.ts';
@@ -389,6 +390,15 @@ export class PanelController {
         case 'undoLast': await this.onUndoLast(); break;
         case 'openFile': await this.onOpenFile(msg.uri, msg.line); break;
         case 'previewFile': await this.onPreviewFile(msg.uri, msg.path); break;
+        case 'copyToClipboard': {
+          try {
+            await vscode.env.clipboard.writeText(msg.text);
+            void vscode.window.showInformationMessage(`${DISPLAY_NAME}：已复制 ${msg.text}`);
+          } catch (e) {
+            this.postError(e);
+          }
+          break;
+        }
         case 'importExpressionSet': await this.onImport(); break;
         case 'exportExpressionSet': await this.onExport(msg.data); break;
         case 'exportReport': await exportReport(this.state); break;
@@ -683,6 +693,12 @@ export class PanelController {
     } catch (e) {
       error = `读取失败：${(e as Error).message}`;
     }
+    // 0.2.6 需求1：结构化文件生成节点路径清单（仅在前 1500 行内），供复制 $.a.b。
+    const low = ext.toLowerCase();
+    const fmt: 'json' | 'yaml' | 'text' =
+      low === 'json' || low === 'jsonc' ? 'json'
+        : low === 'yaml' || low === 'yml' ? 'yaml' : 'text';
+    const nodes = !error && text ? collectPreviewNodes(text, fmt) : [];
     this.post({
       type: 'fileContent',
       payload: {
@@ -691,6 +707,7 @@ export class PanelController {
         ext,
         text,
         truncated,
+        ...(fmt !== 'text' ? { nodes } : {}),
         ...(error ? { error } : {}),
       },
     });

@@ -4,10 +4,28 @@ import { planJsonc } from './jsoncAdapter.ts';
 import { planYaml } from './yamlAdapter.ts';
 import { planText } from './textAdapter.ts';
 import { detectConflicts, mergePatches } from './merge.ts';
+import { resolveInstructions, usesExprFeatures } from './expression.ts';
+import * as jsonc from 'jsonc-parser';
+import { parseAllDocuments } from 'yaml';
 
 export interface PlanOptions {
   maxMatches?: number;
   maxBytes?: number;
+}
+
+
+/** 0.2.6：把文档解析成 JS 值，供表达式/条件读取。失败返回 undefined（指令原样走 adapter，由 adapter 报错）。 */
+function docValueFor(text: string, format: 'json' | 'yaml'): unknown {
+  try {
+    if (format === 'json') {
+      const v = jsonc.parse(text);
+      return v;
+    }
+    const docs = parseAllDocuments(text) as any[];
+    return docs.length && !docs[0].errors.length ? docs[0].toJS() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** §5.4 一个文件 × 已按 fileScope 挑选过的指令 → FileChangePlan */
@@ -29,10 +47,28 @@ export function planFile(
   const patches: MinimalPatch[] = [];
   const parseErrors: string[] = [];
 
+  // 0.2.6 需求2一期：仅结构化指令支持派生值/条件。先把文档解析成 JS 值，
+  // 再解析每条指令的 when / valueExpr；条件不满足或表达式错误 → 跳过该指令并记账。
+  let effJsonIns = jsonIns;
+  let effYamlIns = yamlIns;
+  if ((jsonIns.length || yamlIns.length) &&
+      instructions.some(i => i.engine === 'structured' && usesExprFeatures(i))) {
+    if (jsonIns.length) {
+      const r = resolveInstructions(jsonIns, docValueFor(text, 'json'));
+      effJsonIns = r.instructions;
+      parseErrors.push(...r.errors);
+    }
+    if (yamlIns.length) {
+      const r = resolveInstructions(yamlIns, docValueFor(text, 'yaml'));
+      effYamlIns = r.instructions;
+      parseErrors.push(...r.errors);
+    }
+  }
+
   // 0.2.1：任何适配器抛异常都降级为该文件跳过，绝不让单文件问题中断整轮扫描
   if (jsonIns.length) {
     try {
-      const r = planJsonc(text, jsonIns);
+      const r = planJsonc(text, effJsonIns);
       patches.push(...r.patches);
       if (r.parseErrors) parseErrors.push(...r.parseErrors);
     } catch (e) {
@@ -41,7 +77,7 @@ export function planFile(
   }
   if (yamlIns.length) {
     try {
-      const r = planYaml(text, yamlIns);
+      const r = planYaml(text, effYamlIns);
       patches.push(...r.patches);
       if (r.parseErrors) parseErrors.push(...r.parseErrors);
     } catch (e) {
